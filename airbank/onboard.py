@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from . import config, ui
 
-STEPS = 4
+STEPS = 3
 
 
 def _header(step, title):
@@ -147,34 +147,8 @@ def run():
                      "long-only, unlevered, inside this bankroll"))
     product["account"] = account
 
-    # ---- step 3: theme (live preview: the sample strip re-colors as you move)
-    _header(3, "Pick your style")
-    print()
-    names = list(ui.THEMES)
-
-    def _sample():
-        return (f"  {ui.accent('▮▮ AIRBANK')}  {ui.accent2('BTC/USD 60,736')}  "
-                f"{ui.good('+2.4%')}  {ui.bad('-0.8%')}  "
-                f"{ui.accent(ui.SPARK * 2)}  {ui.dim('the fund, in this theme')}")
-
-    def _preview(i):
-        # cursor sits on the menu's first line; the sample strip is 3 rows up
-        ui.set_theme(names[i])
-        sys.stdout.write("\0337\033[3A\r\033[2K" + _sample() + "\0338")
-        sys.stdout.flush()
-
-    if sys.stdin.isatty():
-        print(_sample())
-        print()
-        theme_idx = ui.select("Theme", [ui.THEMES[n]["label"] for n in names],
-                              preview=_preview)
-    else:
-        theme_idx = ui.select("Theme", [ui.THEMES[n]["label"] for n in names])
-    product["theme"] = names[theme_idx]
-    ui.set_theme(names[theme_idx])
-
-    # ---- step 4: confirm + save
-    _header(4, "Confirm")
+    # ---- step 3: confirm + save
+    _header(3, "Confirm")
     print()
     label = {"mock": f"Mock portfolio · {ui.money(account.get('starting_cash', 0))} starting cash",
              "alpaca_paper": "Alpaca paper trading",
@@ -183,7 +157,6 @@ def run():
              "mirror": f"Mirror · {account.get('mirror', {}).get('source', '?')} · "
                        f"{ui.money(account.get('starting_cash', 0))} bankroll"}
     print(f"  account   {ui.bold(label[account['type']])}")
-    print(f"  theme     {ui.bold(product['theme'])}")
     print(f"  config    {ui.dim(str(config.CONFIG_JSON))}")
     print(f"  contract  {ui.dim(str(config.HOME_DIR / 'contract.md'))}")
     print()

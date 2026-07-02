@@ -1,35 +1,27 @@
-"""Terminal UI toolkit: themes, styled text, arrow-key menus, sparklines.
-Pure stdlib. Contract assertions 29 and 34."""
+"""Terminal UI toolkit: the Airbank standard color profile, styled text,
+arrow-key menus, sparklines. Pure stdlib. Contract assertions 29 and 34.
+
+Profile: body text is the terminal's own white; the brand is shark blue —
+dark Finsider blue (256c 25) for the cursor, accents, and the breathing
+widget, a lighter shade (256c 75) for submitted text; links are blue and
+underlined; code renders as Claude-style inline chips. Market data (tickers,
+sparklines, P&L) stays multicolored."""
 import os
+import re
 import sys
 
-THEMES = {
-    "midnight":  {"accent": "36", "accent2": "94", "good": "32", "bad": "31",
-                  "warn": "33", "label": "Midnight — cool cyan, the default"},
-    "terminal":  {"accent": "33", "accent2": "38;5;208", "good": "32", "bad": "31",
-                  "warn": "33", "label": "Terminal — amber like a trading floor"},
-    "matrix":    {"accent": "32", "accent2": "38;5;46", "good": "38;5;46", "bad": "31",
-                  "warn": "33", "label": "Matrix — all green everything"},
-    "mono":      {"accent": "", "accent2": "", "good": "", "bad": "",
-                  "warn": "", "label": "Mono — no color at all"},
-}
-
-_theme_name = "midnight"
-
-
-def set_theme(name):
-    global _theme_name
-    if name in THEMES:
-        _theme_name = name
-
-
-def theme():
-    return THEMES[_theme_name]
+SHARK = "38;5;25"           # dark finsider blue — the brand
+SHARK_LIGHT = "38;5;75"     # lighter shark — pasted/submitted text
+SHARK_BG = "48;5;25"        # the block cursor
+SHARK_DIM_BG = "48;5;17"    # slight highlight behind user messages
+LINK = "4;38;5;33"          # links: blue + underline
+CODE = "48;5;236;38;5;186"  # inline code chip: warm text on a dark slab
+# one full breath, in and out — stepped through slowly, never flashing
+BREATH_SHADES = ["24", "25", "26", "32", "38", "75", "111", "75", "38", "32", "26", "25"]
 
 
 def color_on():
-    return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None \
-        and _theme_name != "mono"
+    return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 
 
 def _sgr(code, text):
@@ -40,11 +32,33 @@ def _sgr(code, text):
 
 def bold(t):   return _sgr("1", t)
 def dim(t):    return _sgr("2", t)
-def accent(t): return _sgr(theme()["accent"], t)
-def accent2(t): return _sgr(theme()["accent2"], t)
-def good(t):   return _sgr(theme()["good"], t)
-def bad(t):    return _sgr(theme()["bad"], t)
-def warn(t):   return _sgr(theme()["warn"], t)
+def accent(t): return _sgr(SHARK, t)
+def accent2(t): return _sgr(SHARK_LIGHT, t)
+def good(t):   return _sgr("32", t)
+def bad(t):    return _sgr("31", t)
+def warn(t):   return _sgr("33", t)
+def link(t):   return _sgr(LINK, t)
+
+
+def breath(t, step):
+    """One shade of the breathing ramp — callers advance `step` slowly."""
+    return _sgr(f"38;5;{BREATH_SHADES[step % len(BREATH_SHADES)]}", t)
+
+
+def cursor_block():
+    return _sgr(SHARK_BG, " ")
+
+
+_CODE_RE = re.compile(r"`([^`\n]+)`")
+_URL_RE = re.compile(r"(https?://[^\s)\"']+)")
+
+
+def rich(t):
+    """Inline styling for chat text: `code` chips and blue links."""
+    if not color_on():
+        return t
+    t = _CODE_RE.sub(lambda m: f"\033[{CODE}m {m.group(1)} \033[0m", t)
+    return _URL_RE.sub(lambda m: f"\033[{LINK}m{m.group(1)}\033[0m", t)
 
 
 def money(v):

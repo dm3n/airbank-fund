@@ -116,8 +116,11 @@ Daniel's explicit per-trade approval. Paper mode may auto-execute.
     is false at the broker layer, independent of upstream checks.
 33. `alpaca_live` remains triple-locked: chosen in onboarding, `live_ack`
     in state, per-trade approval.
-34. Themes are user-selectable in onboarding (and via config.json), applied
-    across every command; a no-color theme exists and `NO_COLOR` is honored.
+34. One standard color profile: body text is the terminal's white, links
+    are blue, code renders as inline chips, and the brand is shark blue —
+    dark Finsider blue for the cursor, accents, and the breathing widget,
+    a lighter shade for submitted text. Market data (tickers, sparklines,
+    P&L) stays multicolored. `NO_COLOR` is honored.
 35. `status` and `watch` render portfolio (cash, equity, positions, day and
     total P&L) from state alone — no network. The loop refreshes the
     portfolio view and an equity-history ring buffer (≤96 points) each cycle.
@@ -136,8 +139,7 @@ Daniel's explicit per-trade approval. Paper mode may auto-execute.
     report in ~/.airbank/research/, and records status in state.
 40. Analyst reports are advisory only — the desk has no code path to an
     order. Only the loop trades.
-41. Onboarding: the cash prompt carries a `$` at the input point, and theme
-    selection live-previews the highlighted theme before it is chosen.
+41. Onboarding: the cash prompt carries a `$` at the input point.
 
 ### J. Mirror accounts & views (v2.3)
 42. Account type `mirror` replicates an external portfolio — a public crypto
@@ -153,8 +155,13 @@ Daniel's explicit per-trade approval. Paper mode may auto-execute.
 45. Three views: dashboard, hybrid (the desk chat replaces only the TAPE
     panel, the grid stays), and full chat. A message sent from the
     dashboard lands in hybrid; esc always steps back toward the dashboard.
-46. While the desk thinks, a breathing indicator (glyph + verb + elapsed
-    seconds) animates in the chat and the status line.
+46. While the desk thinks, the indicator text BREATHES: its color steps
+    through the shark-blue ramp one shade at a time (~2.5s per full breath),
+    never flashing, in both the chat and the status line.
+47. Typing `/` opens Claude Code-style autocomplete under the input bar:
+    closest command matches with descriptions, ↑↓ to choose, tab to
+    complete, enter to run the highlighted pick. `/deploy` continues into
+    analyst-name suggestions.
 
 ## Rubric calibration (rule 6)
 

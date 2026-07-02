@@ -12,9 +12,8 @@ from . import config, ui
 from .state import LOG_FILE, load_state, log, save_state
 from .ui import accent, accent2, bad, bold, dim, good, money, warn
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
-ui.set_theme(config.THEME)
 
 
 def banner():
@@ -39,7 +38,7 @@ def mode_line():
     if config.ACCOUNT_TYPE in ("alpaca_paper", "alpaca_live"):
         extra = "  ·  " + (good("broker connected") if config.HAS_BROKER
                            else warn("no keys — research mode"))
-    return f"account {account}{extra}  ·  theme {dim(config.THEME)}"
+    return f"account {account}{extra}"
 
 
 def portfolio_panel(state):
@@ -274,22 +273,6 @@ def cmd_doctor(*_):
     print(good("all systems go") if ok_all else warn("issues above need attention"))
 
 
-def cmd_theme(name=None, *_):
-    if name not in ui.THEMES:
-        print(bold("themes:"))
-        for key, t in ui.THEMES.items():
-            marker = accent("▸ ") if key == config.THEME else "  "
-            print(f"  {marker}{key:10s} {dim(t['label'])}")
-        print(dim("\n  set one: airbank theme <name>"))
-        return
-    import json
-    product = config.load_product_config()
-    product["theme"] = name
-    config.CONFIG_JSON.parent.mkdir(parents=True, exist_ok=True)
-    config.CONFIG_JSON.write_text(json.dumps(product, indent=2) + "\n")
-    ui.set_theme(name)
-    print(good(f"theme set: {name}") + "  " + accent("▮▮") + accent2(" ▮▮"))
-
 
 def cmd_dash(*_):
     from . import dashboard
@@ -397,8 +380,7 @@ def help_text():
     {accent(bold('airbank'))}                   open the terminal (live Bloomberg-style fund view)
 
   {bold('setup')}
-    airbank init              onboarding wizard (account, style — mock money welcome)
-    airbank theme [name]      list or switch themes
+    airbank init              onboarding wizard (mock money welcome)
     airbank doctor            health check
     airbank contract          print the loop contract (the graded spec)
 
@@ -430,7 +412,7 @@ COMMANDS = {
     "init": cmd_init, "status": cmd_status, "run": cmd_run, "run-once": cmd_run,
     "backtest": cmd_backtest, "watch": cmd_watch, "halt": cmd_halt,
     "resume": cmd_resume, "start": cmd_start, "stop": cmd_stop,
-    "doctor": cmd_doctor, "contract": cmd_contract, "theme": cmd_theme,
+    "doctor": cmd_doctor, "contract": cmd_contract,
     "dash": cmd_dash, "terminal": cmd_dash, "analysts": cmd_analysts,
     "deploy": cmd_deploy, "schedule": cmd_schedule, "research": cmd_research,
     "version": cmd_version, "--version": cmd_version,
@@ -439,7 +421,7 @@ COMMANDS = {
 }
 
 NO_ONBOARD = {"init", "help", "-h", "--help", "version", "--version",
-              "contract", "theme", "stop"}
+              "contract", "stop"}
 
 
 def main():

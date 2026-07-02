@@ -20,9 +20,18 @@ from .quotes import QuoteBoard
 from .state import LOG_FILE, load_state
 
 ANSI_RE = re.compile(r"\033\[[0-9;]*m")
-BREATH = "·✢✳✶✻✽✻✶✳✢"          # the desk, breathing — like Claude does
 THINK_VERBS = ["thinking", "reading the tape", "checking the book",
                "weighing it", "running the numbers"]
+
+SLASH_COMMANDS = {
+    "/run": "run one cycle: gather → reason → act → verify",
+    "/deploy": "deploy an analyst — premarket · macro · crypto · equity · risk · journal",
+    "/backtest": "re-gate the strategies on a year of daily bars",
+    "/dash": "the full dashboard",
+    "/hybrid": "desk chat inside the grid",
+    "/chat": "full-screen desk chat",
+    "/quit": "leave the terminal (the 24/7 loop keeps running)",
+}
 
 
 def vlen(s):
@@ -93,16 +102,17 @@ class Terminal:
         self.busy = ""
         self.frame = 0
         self.switch_anim = False
+        self.sugg_idx = 0
         self.quit = False
 
     def _breather(self):
-        """The subtle working indicator: a breathing glyph, a rotating verb,
-        the elapsed seconds."""
-        glyph = BREATH[self.frame % len(BREATH)]
-        verb = THINK_VERBS[int(time.time() - self.think_started) // 4 % len(THINK_VERBS)]
-        elapsed = int(time.time() - self.think_started)
-        core = f"{glyph} {verb}… ({elapsed}s)"
-        return ui.accent(core) if self.frame % 6 < 3 else ui.dim(core)
+        """The working indicator: text that breathes. One full inhale/exhale
+        takes ~2.5s — the color steps through the shark-blue ramp one shade
+        at a time, no flashing, clean to the last pixel."""
+        elapsed = time.time() - self.think_started
+        step = int(elapsed / 0.21)          # one shade every ~0.21s
+        verb = THINK_VERBS[int(elapsed) // 5 % len(THINK_VERBS)]
+        return ui.breath(f"✻ {verb}… ({int(elapsed)}s)", step)
 
     def _goto(self, view):
         if view != self.view:
@@ -162,16 +172,6 @@ class Terminal:
             self._say("system", f"backtest done: {gates}")
         self._spawn("backtest", go)
 
-    def action_theme(self, name=None):
-        import json
-        names = list(ui.THEMES)
-        nxt = name if name in names else names[(names.index(ui._theme_name) + 1) % len(names)]
-        ui.set_theme(nxt)
-        product = config.load_product_config()
-        product["theme"] = nxt
-        config.CONFIG_JSON.write_text(json.dumps(product, indent=2) + "\n")
-        self.status = ui.good(f"theme: {nxt}")
-
     def ask(self, message):
         self._say("user", message)
         if self.view == "dash":       # chat lands where the tape was
@@ -202,8 +202,6 @@ class Terminal:
         elif verb == "deploy" and len(parts) > 1 and parts[1] in analysts.ROSTER:
             self._say("system", f"→ deploying {parts[1]} …")
             self.action_deploy(parts[1])
-        elif verb == "theme":
-            self.action_theme(parts[1] if len(parts) > 1 else None)
         elif verb:
             self._say("system", f"unknown action: {action}")
 
@@ -312,11 +310,27 @@ class Terminal:
             if role == "assistant" and is_last and self.reveal < len(text):
                 text = text[:self.reveal]
             if role == "user":
+                # the submitted message carries a slight shark-blue highlight
                 for j, seg in enumerate(textwrap.wrap(text, wrap) or [""]):
-                    lines.append((ui.accent2("> ") if j == 0 else "  ") + ui.bold(seg))
+                    mark = ui.accent2("> ") if j == 0 else "  "
+                    if ui.color_on():
+                        seg = f"\033[{ui.SHARK_DIM_BG};{ui.SHARK_LIGHT}m {seg} \033[0m"
+                    lines.append(mark + seg)
             elif role == "assistant":
-                for j, seg in enumerate(textwrap.wrap(text, wrap) or [""]):
-                    lines.append((ui.accent("⏺ ") if j == 0 else "  ") + seg)
+                in_code, first = False, True
+                for raw in text.splitlines() or [""]:
+                    if raw.strip().startswith("```"):
+                        in_code = not in_code
+                        continue
+                    if in_code:      # fenced code: a Claude-style slab
+                        line = raw[:wrap - 2]
+                        if ui.color_on():
+                            line = f"\033[48;5;236;38;5;252m  {line.ljust(wrap - 2)}\033[0m"
+                        lines.append("  " + line)
+                        continue
+                    for seg in textwrap.wrap(raw, wrap) or [""]:
+                        lines.append((ui.accent("⏺ ") if first else "  ") + ui.rich(seg))
+                        first = False
             else:
                 lines.append(ui.dim("  → " + text))
             lines.append("")
@@ -330,22 +344,61 @@ class Terminal:
 
     # -------- the bottom: Claude Code-style chat bar (both views)
 
+    def suggestions(self):
+        """Closest slash-command matches for the current input — the
+        Claude Code autocomplete (contract assertion 47)."""
+        if not self.input.startswith("/"):
+            return []
+        parts = self.input.split()
+        head = parts[0].lower() if parts else "/"
+        past_first_word = len(parts) > 1 or self.input.endswith(" ")
+        if head == "/deploy" and past_first_word:
+            prefix = parts[1].lower() if len(parts) > 1 else ""
+            return [(f"/deploy {name}", analysts.ROSTER[name]["desc"])
+                    for name in analysts.ROSTER if name.startswith(prefix)]
+        if past_first_word:
+            return []
+        return [(c, d) for c, d in SLASH_COMMANDS.items() if c.startswith(head)]
+
+    def _complete(self):
+        matches = self.suggestions()
+        if not matches:
+            return
+        cmd = matches[min(self.sugg_idx, len(matches) - 1)][0]
+        self.input = cmd + (" " if cmd == "/deploy" else "")
+        self.sugg_idx = 0
+
     def _chat_bar(self, width):
         inner = width - 2
         status = self._breather() if self.thinking else self.status
         rows = [clip(" " + status, width)]
         if self.input:
             shown = self.input[-(inner - 5):]
-            content = ui.accent("> ") + ui.bold(shown) + ui.accent("▌")
+            content = ui.accent("> ") + ui.bold(shown) + ui.cursor_block()
         else:
-            content = ui.accent("> ") + ui.dim("ask your fund anything… (or /run /deploy /backtest /theme /quit)")
+            content = ui.accent("> ") + ui.dim(
+                "ask your fund anything…  /  for commands") + ui.cursor_block()
         rows.append(ui.dim("╭" + "─" * inner + "╮"))
         rows.append(ui.dim("│") + pad(" " + clip(content, inner - 2), inner) + ui.dim("│"))
         rows.append(ui.dim("╰" + "─" * inner + "╯"))
-        back = {"chat": "hybrid", "hybrid": "dashboard", "dash": "desk"}[self.view]
-        left = f"  ⏎ send   esc {back}   /dash /hybrid /chat   ⌃c quit"
-        right = f"{config.ACCOUNT_TYPE.upper().replace('_', ' ')} · airbank by finsider  "
-        rows.append(clip(pad(ui.dim(left), width - vlen(right)) + ui.dim(right), width))
+        matches = self.suggestions()
+        if matches:
+            self.sugg_idx = min(self.sugg_idx, len(matches) - 1)
+            for i, (cmd, desc) in enumerate(matches[:6]):
+                line = f"   {cmd:<18s} {desc}"
+                if i == self.sugg_idx and ui.color_on():
+                    line = f"\033[{ui.SHARK_BG};38;5;231m{pad(line, min(width, 78))}\033[0m"
+                elif i == self.sugg_idx:
+                    line = " ▸ " + line[3:]
+                else:
+                    line = ui.dim(line)
+                rows.append(clip(line, width))
+            rows.append(ui.dim("   ↑↓ choose · tab complete · ⏎ run"))
+        else:
+            back = {"chat": "hybrid", "hybrid": "dashboard", "dash": "desk"}[self.view]
+            left = f"  ⏎ send   esc {back}   /  commands   ⌃c quit"
+            right = f"{config.ACCOUNT_TYPE.upper().replace('_', ' ')} · airbank by finsider  "
+            rows.append(clip(pad(ui.dim(left), width - vlen(right)) + ui.dim(right), width))
         return rows
 
     # -------- frame
@@ -416,21 +469,41 @@ class Terminal:
     def handle(self, key):
         if key == "\x03":                       # ctrl-c
             return False
+        if key in ("UP", "DOWN"):               # autocomplete navigation
+            matches = self.suggestions()
+            if matches:
+                self.sugg_idx = (self.sugg_idx + (1 if key == "DOWN" else -1)) % min(len(matches), 6)
+            return True
+        if key == "\t":                         # tab: complete to the pick
+            self._complete()
+            return True
         if key == "\x1b":                       # esc: step back toward the dashboard
+            if self.input.startswith("/"):
+                self.input = ""                 # esc first dismisses the menu
+                return True
             self._goto({"chat": "hybrid", "hybrid": "dash", "dash": "hybrid"}[self.view])
             return True
         if key in ("\r", "\n"):
             return self.submit()
         if key in ("\x7f", "\x08"):
             self.input = self.input[:-1]
+            self.sugg_idx = 0
             return True
         if key.isprintable() and len(key) == 1:
             self.input += key
+            self.sugg_idx = 0
         return True
 
     def submit(self):
+        # enter with the menu open runs the highlighted command
+        matches = self.suggestions()
+        if matches and self.input.strip() != matches[min(self.sugg_idx, len(matches) - 1)][0]:
+            self._complete()
+            if self.input.endswith(" "):        # /deploy — needs its analyst
+                return True
         message = self.input.strip()
         self.input = ""
+        self.sugg_idx = 0
         if not message:
             return True
         if message.startswith("/"):
@@ -453,8 +526,6 @@ class Terminal:
                 self.action_deploy(parts[1])
             else:
                 self.status = ui.warn("deploy who? " + " ".join(analysts.ROSTER))
-        elif cmd == "theme":
-            self.action_theme(parts[1] if len(parts) > 1 else None)
         elif cmd in ("dash", "dashboard"):
             self._goto("dash")
         elif cmd == "chat":
@@ -463,7 +534,7 @@ class Terminal:
             self._goto("hybrid")
         else:
             self.status = ui.warn(
-                f"unknown command /{cmd} — /run /deploy /backtest /theme /dash /hybrid /chat /quit")
+                f"unknown command /{cmd} — /run /deploy /backtest /dash /hybrid /chat /quit")
         return True
 
     # -------- lifecycle
@@ -507,11 +578,17 @@ class Terminal:
                     if burst == "\x1b":
                         alive = self.handle("\x1b")
                     else:
-                        # strip whole escape sequences (arrows etc.) so they
-                        # never leak characters into the chat input
-                        cleaned = re.sub(r"\x1b(\[[0-9;]*[A-Za-z~])?", "", burst)
-                        for ch in cleaned:
-                            alive = self.handle(ch)
+                        # translate arrows for autocomplete; strip any other
+                        # escape sequence so it never leaks into the input
+                        burst = burst.replace("\x1b[A", "\x00UP\x00")
+                        burst = burst.replace("\x1b[B", "\x00DOWN\x00")
+                        burst = re.sub(r"\x1b(\[[0-9;]*[A-Za-z~])?", "", burst)
+                        for token in burst.split("\x00"):
+                            keys = [token] if token in ("UP", "DOWN") else list(token)
+                            for ch in keys:
+                                alive = self.handle(ch)
+                                if not alive:
+                                    break
                             if not alive:
                                 break
         finally:

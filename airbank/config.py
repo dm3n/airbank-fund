@@ -43,7 +43,6 @@ ACCOUNT = PRODUCT.get("account", {})
 ACCOUNT_TYPE = ACCOUNT.get("type", "mock")
 STARTING_CASH = float(ACCOUNT.get("starting_cash", 100_000.0))
 WALLET = ACCOUNT.get("wallet", {})
-THEME = PRODUCT.get("theme", "midnight")
 
 # env override kept for ops/testing; onboarding choice is the primary lock
 MODE = os.environ.get("AIRBANK_MODE") or (

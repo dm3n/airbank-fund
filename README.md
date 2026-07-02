@@ -77,8 +77,12 @@ Four account types:
 | **Alpaca live** | real money — triple-locked, every trade needs your approval |
 | **Watch-only wallet** | track a public BTC/ETH address; the fund researches but never trades |
 
-Four themes (`airbank theme` to switch anytime): midnight, terminal, matrix,
-mono. `NO_COLOR` is honored.
+One standard look: white text, blue links, Claude-style inline code chips,
+and the brand in shark blue — the dark Finsider blue drives the block cursor,
+accents, and the breathing thinking indicator; your submitted messages carry
+a subtle lighter-blue highlight. Market data stays multicolored. Typing `/`
+opens Claude Code-style autocomplete: closest commands with descriptions,
+↑↓ to choose, tab to complete, enter to run. `NO_COLOR` is honored.
 
 ## The loop
 
