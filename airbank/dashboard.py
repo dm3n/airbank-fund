@@ -310,11 +310,11 @@ class Terminal:
             if role == "assistant" and is_last and self.reveal < len(text):
                 text = text[:self.reveal]
             if role == "user":
-                # the submitted message carries a slight shark-blue highlight
+                # submitted text: white, on a slight shark-blue field
                 for j, seg in enumerate(textwrap.wrap(text, wrap) or [""]):
                     mark = ui.accent2("> ") if j == 0 else "  "
                     if ui.color_on():
-                        seg = f"\033[{ui.SHARK_DIM_BG};{ui.SHARK_LIGHT}m {seg} \033[0m"
+                        seg = f"\033[{ui.SHARK_DIM_BG};{ui.WHITE}m {seg} \033[0m"
                     lines.append(mark + seg)
             elif role == "assistant":
                 in_code, first = False, True

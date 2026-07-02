@@ -10,14 +10,15 @@ import os
 import re
 import sys
 
-SHARK = "38;5;25"           # dark finsider blue — the brand
-SHARK_LIGHT = "38;5;75"     # lighter shark — pasted/submitted text
-SHARK_BG = "48;5;25"        # the block cursor
-SHARK_DIM_BG = "48;5;17"    # slight highlight behind user messages
-LINK = "4;38;5;33"          # links: blue + underline
+SHARK = "38;5;38"           # finsider shark blue — the brand (bright, not murky)
+SHARK_LIGHT = "38;5;81"     # lighter shark — secondary accents
+SHARK_BG = "48;5;38"        # the block cursor
+SHARK_DIM_BG = "48;5;17"    # slight highlight field behind user messages
+WHITE = "38;5;231"          # message text stays white, always
+LINK = "4;38;5;39"          # links: blue + underline
 CODE = "48;5;236;38;5;186"  # inline code chip: warm text on a dark slab
 # one full breath, in and out — stepped through slowly, never flashing
-BREATH_SHADES = ["24", "25", "26", "32", "38", "75", "111", "75", "38", "32", "26", "25"]
+BREATH_SHADES = ["26", "32", "38", "45", "81", "123", "153", "123", "81", "45", "38", "32"]
 
 
 def color_on():
@@ -78,6 +79,8 @@ BANNER = r"""
 """
 
 SPARK = "▁▂▃▄▅▆▇█"
+# heat ramp for graph bars: lows run red, highs run green
+SPARK_HEAT = ["196", "202", "208", "214", "220", "190", "118", "46"]
 
 
 def sparkline(values, width=48):
@@ -87,8 +90,12 @@ def sparkline(values, width=48):
     lo, hi = min(values), max(values)
     if hi == lo:
         return accent(SPARK[3] * len(values))
-    return accent("".join(
-        SPARK[int((v - lo) / (hi - lo) * (len(SPARK) - 1))] for v in values))
+    out = []
+    for v in values:
+        level = int((v - lo) / (hi - lo) * (len(SPARK) - 1))
+        char = SPARK[level]
+        out.append(f"\033[38;5;{SPARK_HEAT[level]}m{char}" if color_on() else char)
+    return "".join(out) + ("\033[0m" if color_on() else "")
 
 
 # --------------------------------------------------------------- key input
