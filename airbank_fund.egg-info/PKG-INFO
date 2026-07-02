@@ -1,3 +1,17 @@
+Metadata-Version: 2.4
+Name: airbank-fund
+Version: 1.0.0
+Summary: Airbank by Finsider — the AI-native hedge fund that lives in your terminal
+Author-email: Daniel Edgar <daniel@nodebase.ca>
+License: MIT
+Project-URL: Homepage, https://github.com/dm3n/airbank-fund
+Keywords: trading,hedge-fund,ai,agents,quant
+Classifier: Environment :: Console
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Office/Business :: Financial :: Investment
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+
 # Airbank by Finsider
 
 **The AI-native hedge fund that lives in your terminal.** A 24/7 agent loop

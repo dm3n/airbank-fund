@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airbank-fund"
+version = "1.0.0"
+description = "Airbank by Finsider — the AI-native hedge fund that lives in your terminal"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Daniel Edgar", email = "daniel@nodebase.ca" }]
+keywords = ["trading", "hedge-fund", "ai", "agents", "quant"]
+classifiers = [
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+[project.urls]
+Homepage = "https://github.com/dm3n/airbank-fund"
+
+[project.scripts]
+airbank = "airbank.cli:main"
+
+[tool.setuptools]
+packages = ["airbank"]
+
+[tool.setuptools.package-data]
+airbank = ["contract.md"]
