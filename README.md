@@ -39,6 +39,18 @@ airbank backtest  # strategies must earn a Sharpe > 0.5 to trade
 airbank start     # the loop runs 24/7, one cycle every 15 min
 ```
 
+## Talk to your fund
+
+The chat bar at the bottom of the terminal is the main way you drive
+Airbank — it works exactly like Claude Code. Type anything; the screen flips
+to the desk conversation, the answer streams in grounded in your live book,
+and `esc` flips you straight back to the dashboard.
+
+The desk can act, not just talk: ask it to run a cycle, backtest, or deploy
+an analyst and it does it (through the same risk and approval layers —
+live-money approvals still require the explicit `airbank approve <id>`).
+Slash commands work too: `/run` `/deploy <name>` `/backtest` `/theme` `/quit`.
+
 ## The analyst desk
 
 Deploy a research agent whenever you want a second brain on the book. Each

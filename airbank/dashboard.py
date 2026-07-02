@@ -1,23 +1,26 @@
-"""The Airbank terminal: a full-screen, boxed-grid, Bloomberg-style live fund
-view. Typing bare `airbank` lands here (contract assertion 36). Background
-threads stream quotes and run actions; only the main thread draws (assertion
-38). Live-money approvals stay explicit CLI commands (assertion 37)."""
+"""The Airbank terminal: a full-screen Bloomberg-style fund view with a
+Claude Code-style chat bar as the primary way to drive it. Typing bare
+`airbank` lands here (contract assertion 36). Background threads stream
+quotes and run actions; only the main thread draws (assertion 38).
+Live-money approvals stay explicit CLI commands (assertion 37)."""
 import os
 import re
 import select as _select
 import shutil
 import sys
 import termios
+import textwrap
 import threading
 import time
 import tty
 from datetime import datetime, timezone
 
-from . import analysts, config, ui
+from . import analysts, chat, config, ui
 from .quotes import QuoteBoard
 from .state import LOG_FILE, load_state
 
 ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 def vlen(s):
@@ -58,7 +61,6 @@ def panel(title, lines, width, height):
 
 
 def beside(a, b, gap=0):
-    """Merge two equal-height row lists side by side."""
     wa = max(vlen(r) for r in a) if a else 0
     out = []
     for i in range(max(len(a), len(b))):
@@ -79,12 +81,23 @@ def us_market_open(now=None):
 class Terminal:
     def __init__(self):
         self.board = QuoteBoard()
-        self.status = ui.dim("streaming live quotes …")
-        self.mode = "main"          # main | deploy
+        self.status = ui.dim("your fund is live — say something to the desk below")
+        self.view = "dash"            # dash | chat
+        self.input = ""
+        self.transcript = []          # (role, text): user | assistant | system
+        self.thinking = False
+        self.reveal = 0               # typewriter progress on last assistant msg
         self.busy = ""
         self.frame = 0
+        self.switch_anim = False
+        self.quit = False
 
-    # -------- actions (threads set status; never draw)
+    # -------- background actions (threads set state; never draw)
+
+    def _say(self, role, text):
+        self.transcript.append((role, text))
+        if role == "assistant":
+            self.reveal = 0
 
     def _spawn(self, name, fn):
         if self.busy:
@@ -97,6 +110,7 @@ class Terminal:
                 fn()
             except Exception as exc:
                 self.status = ui.bad(f"{name} failed: {str(exc)[:60]}")
+                self._say("system", f"{name} failed: {str(exc)[:80]}")
             finally:
                 self.busy = ""
         threading.Thread(target=runner, daemon=True).start()
@@ -106,16 +120,18 @@ class Terminal:
             from .loop import run_cycle
             self.status = ui.warn("CYCLE RUNNING — gather → reason → act → verify …")
             score, cycle = run_cycle()
-            self.status = ui.good(
-                f"cycle done · score {score:.2f} · {len(cycle['candidates'])} candidates "
-                f"· {len(cycle['executed'])} executed · {len(cycle['refused'])} refused")
+            msg = (f"cycle done · score {score:.2f} · {len(cycle['candidates'])} candidates · "
+                   f"{len(cycle['executed'])} executed · {len(cycle['refused'])} refused")
+            self.status = ui.good(msg)
+            self._say("system", msg)
         self._spawn("cycle", go)
 
     def action_deploy(self, name):
         def go():
             self.status = ui.warn(f"DEPLOYING {analysts.ROSTER[name]['title'].upper()} …")
-            _, headline = analysts.deploy(name)
+            path, headline = analysts.deploy(name)
             self.status = ui.good(f"{name} filed: {headline[:70]}")
+            self._say("system", f"{name} filed: {headline} → {path}")
         self._spawn(f"deploy:{name}", go)
 
     def action_backtest(self):
@@ -126,22 +142,57 @@ class Terminal:
             gates = ", ".join(f"{k} {'ELIGIBLE' if v['eligible'] else 'benched'}"
                               for k, v in results.items())
             self.status = ui.good(f"backtest done: {gates}")
+            self._say("system", f"backtest done: {gates}")
         self._spawn("backtest", go)
 
-    def action_theme(self):
+    def action_theme(self, name=None):
         import json
         names = list(ui.THEMES)
-        nxt = names[(names.index(ui._theme_name) + 1) % len(names)]
+        nxt = name if name in names else names[(names.index(ui._theme_name) + 1) % len(names)]
         ui.set_theme(nxt)
         product = config.load_product_config()
         product["theme"] = nxt
         config.CONFIG_JSON.write_text(json.dumps(product, indent=2) + "\n")
         self.status = ui.good(f"theme: {nxt}")
 
-    # -------- frame pieces
+    def ask(self, message):
+        self._say("user", message)
+        if self.view != "chat":
+            self.view = "chat"
+            self.switch_anim = True
+        self.thinking = True
+
+        def go():
+            try:
+                reply, action = chat.respond(
+                    message, self.transcript[:-1], quotes=self.board.snapshot())
+            finally:
+                self.thinking = False
+            self._say("assistant", reply)
+            if action:
+                self.dispatch(action)
+        threading.Thread(target=go, daemon=True).start()
+
+    def dispatch(self, action):
+        parts = action.split()
+        verb = parts[0] if parts else ""
+        if verb == "run":
+            self._say("system", "→ running a cycle …")
+            self.action_cycle()
+        elif verb == "backtest":
+            self._say("system", "→ backtesting …")
+            self.action_backtest()
+        elif verb == "deploy" and len(parts) > 1 and parts[1] in analysts.ROSTER:
+            self._say("system", f"→ deploying {parts[1]} …")
+            self.action_deploy(parts[1])
+        elif verb == "theme":
+            self.action_theme(parts[1] if len(parts) > 1 else None)
+        elif verb:
+            self._say("system", f"unknown action: {action}")
+
+    # -------- frame pieces (dash view — unchanged above the chat bar)
 
     def _ticker(self, quotes, width):
-        """Rotating dense quote strip — the tape at the top of the screen."""
         items = []
         for symbol, _ in self.board.symbols:
             q = quotes.get(symbol)
@@ -174,7 +225,7 @@ class Terminal:
         lines = []
         equity = view.get("equity")
         if equity is None:
-            lines.append(ui.dim("no book yet — press R to run the first cycle"))
+            lines.append(ui.dim("no book yet — ask the desk to run a cycle"))
             return lines
         day_pnl = 0.0
         if state.get("day_start_equity"):
@@ -206,7 +257,7 @@ class Terminal:
         lines = [ui.dim(f"{'STRATEGY':<11}{'STATE':<11}{'SHARPE':>7}{'RET':>8}{'MAXDD':>8}")]
         gates = state.get("strategy_gates", {})
         if not gates:
-            lines.append(ui.dim("no gates yet — press B to backtest"))
+            lines.append(ui.dim("no gates yet — ask the desk to backtest"))
         for name, gate in gates.items():
             badge = ui.good("● ELIGIBLE") if gate["eligible"] else ui.dim("○ benched ")
             lines.append(f"{name.upper():<11}" + pad(badge, 11)
@@ -234,6 +285,52 @@ class Terminal:
             lines.append(pad(ui.accent(key.upper()), 11) + stamp)
         return lines
 
+    # -------- chat view
+
+    def _chat_lines(self, width):
+        wrap = max(30, width - 8)
+        lines = []
+        for i, (role, text) in enumerate(self.transcript):
+            is_last = i == len(self.transcript) - 1
+            if role == "assistant" and is_last and self.reveal < len(text):
+                text = text[:self.reveal]
+            if role == "user":
+                for j, seg in enumerate(textwrap.wrap(text, wrap) or [""]):
+                    lines.append((ui.accent2("> ") if j == 0 else "  ") + ui.bold(seg))
+            elif role == "assistant":
+                for j, seg in enumerate(textwrap.wrap(text, wrap) or [""]):
+                    lines.append((ui.accent("⏺ ") if j == 0 else "  ") + seg)
+            else:
+                lines.append(ui.dim("  → " + text))
+            lines.append("")
+        if self.thinking:
+            lines.append(ui.accent(SPINNER[self.frame % len(SPINNER)] + " ")
+                         + ui.dim("the desk is thinking …"))
+        if not lines:
+            lines = ["", ui.dim("  this is your desk — ask about the book, the tape,"),
+                     ui.dim("  the gates, or tell it to deploy an analyst."), "",
+                     ui.dim("  try: “how are we positioned?”  ·  “deploy the premarket analyst”")]
+        return lines
+
+    # -------- the bottom: Claude Code-style chat bar (both views)
+
+    def _chat_bar(self, width):
+        inner = width - 2
+        rows = [clip(" " + self.status, width)]
+        if self.input:
+            shown = self.input[-(inner - 5):]
+            content = ui.accent("> ") + ui.bold(shown) + ui.accent("▌")
+        else:
+            content = ui.accent("> ") + ui.dim("ask your fund anything… (or /run /deploy /backtest /theme /quit)")
+        rows.append(ui.dim("╭" + "─" * inner + "╮"))
+        rows.append(ui.dim("│") + pad(" " + clip(content, inner - 2), inner) + ui.dim("│"))
+        rows.append(ui.dim("╰" + "─" * inner + "╯"))
+        other = "dashboard" if self.view == "chat" else "chat"
+        left = f"  ⏎ send   esc {other}   ⌃c quit"
+        right = f"{config.ACCOUNT_TYPE.upper().replace('_', ' ')} · airbank by finsider  "
+        rows.append(clip(pad(ui.dim(left), width - vlen(right)) + ui.dim(right), width))
+        return rows
+
     # -------- frame
 
     def build(self, width, height):
@@ -243,107 +340,158 @@ class Terminal:
         view = state.get("portfolio_view") or {}
         now = datetime.now(timezone.utc)
 
-        # top command bar (reverse video)
         mkt = ui.good("US OPEN") if us_market_open(now) else ui.dim("US CLOSED")
         account = config.ACCOUNT_TYPE.upper().replace("_", " ")
-        left = f" AIRBANK TERMINAL  {ui.accent('▮▮')}  {account}"
+        title = "DESK CHAT" if self.view == "chat" else "AIRBANK TERMINAL"
+        left = f" {title}  {ui.accent('▮▮')}  {account}"
         if state.get("halt"):
             left += "  " + ui.bad(ui.bold("⛔ HALTED"))
         right = f"CRYPTO 24/7 · {mkt} · {now.strftime('%a %H:%M:%S UTC')} "
         bar = pad(left, width - vlen(right)) + right
         top = "\033[7m" + pad(clip(bar, width), width) + "\033[0m" if ui.color_on() \
             else pad(clip(bar, width), width)
-
         rows = [top, self._ticker(quotes, width)]
 
-        # grid
-        lw = max(42, int(width * 0.42))
-        rw = width - lw - 1
-        markets_h = len(self.board.symbols) + 3
-        row_a = beside(panel("MARKETS", self._markets(quotes), lw, markets_h),
-                       panel("PORTFOLIO", self._portfolio(state, view, rw), rw, markets_h),
-                       gap=1)
-        gates_h = 7
-        desk_h = len(analysts.ROSTER) + 2
-        row_b_h = max(gates_h, desk_h)
-        row_b = beside(panel("STRATEGY GATES · RISK", self._gates(state), lw, row_b_h),
-                       panel("ANALYST DESK", self._desk(state, rw), rw, row_b_h),
-                       gap=1)
-        rows += row_a + row_b
+        bottom = self._chat_bar(width)
+        body_h = height - len(rows) - len(bottom)
 
-        # tape fills the rest
-        tape_h = max(4, height - len(rows) - 2)
-        tape_lines = []
-        if LOG_FILE.exists():
-            recent = [l for l in LOG_FILE.read_text().strip().splitlines() if l.strip()]
-            for line in recent[-(tape_h - 2):]:
-                if line.startswith("## "):
-                    line = ui.accent(line[3:])
-                tape_lines.append(line)
+        if self.view == "chat":
+            chat_lines = self._chat_lines(width)
+            visible = chat_lines[-(body_h - 2):]
+            rows += panel("THE DESK — YOUR FUND, CONVERSATIONAL", visible, width, body_h)
         else:
-            tape_lines.append(ui.dim("the loop hasn't spoken yet"))
-        rows += panel("TAPE — THE LOOP, THINKING", tape_lines, width, tape_h)
+            lw = max(42, int(width * 0.42))
+            rw = width - lw - 1
+            markets_h = len(self.board.symbols) + 3
+            rows += beside(panel("MARKETS", self._markets(quotes), lw, markets_h),
+                           panel("PORTFOLIO", self._portfolio(state, view, rw), rw, markets_h),
+                           gap=1)
+            desk_h = len(analysts.ROSTER) + 2
+            rows += beside(panel("STRATEGY GATES · RISK", self._gates(state), lw, desk_h),
+                           panel("ANALYST DESK", self._desk(state, rw), rw, desk_h),
+                           gap=1)
+            tape_h = max(4, height - len(rows) - len(bottom))
+            tape_lines = []
+            if LOG_FILE.exists():
+                recent = [l for l in LOG_FILE.read_text().strip().splitlines() if l.strip()]
+                for line in recent[-(tape_h - 2):]:
+                    if line.startswith("## "):
+                        line = ui.accent(line[3:])
+                    tape_lines.append(line)
+            else:
+                tape_lines.append(ui.dim("the loop hasn't spoken yet"))
+            rows += panel("TAPE — THE LOOP, THINKING", tape_lines, width, tape_h)
 
-        # status + function-key bar
-        rows.append(clip(" " + self.status, width))
-        if self.mode == "deploy":
-            keys = [(str(i + 1), name.upper()) for i, name in enumerate(analysts.ROSTER)]
-            keys.append(("ESC", "CANCEL"))
-        else:
-            keys = [("R", "RUN CYCLE"), ("D", "DEPLOY ANALYST"), ("B", "BACKTEST"),
-                    ("T", "THEME"), ("Q", "QUIT")]
-        fn = "  ".join(("\033[7m" if ui.color_on() else "") + f" {k} "
-                       + ("\033[0m" if ui.color_on() else "") + f" {label}"
-                       for k, label in keys)
-        rows = rows[:height - 1]
-        rows.append(clip(pad(" " + fn, width), width))
+        while len(rows) < height - len(bottom):
+            rows.append("")
+        rows = rows[:height - len(bottom)] + bottom
         return [clip(r, width) for r in rows[:height]]
 
     # -------- key handling
 
     def handle(self, key):
-        if self.mode == "deploy":
-            names = list(analysts.ROSTER)
-            if key.isdigit() and 1 <= int(key) <= len(names):
-                self.mode = "main"
-                self.action_deploy(names[int(key) - 1])
-            elif key in ("\x1b", "q"):
-                self.mode = "main"
-                self.status = ui.dim("deploy cancelled")
-            return True
-        if key in ("q", "Q"):
+        if key == "\x03":                       # ctrl-c
             return False
-        if key in ("r", "R"):
+        if key == "\x1b":                       # esc: flip views
+            self.view = "chat" if self.view == "dash" else "dash"
+            self.switch_anim = True
+            return True
+        if key in ("\r", "\n"):
+            return self.submit()
+        if key in ("\x7f", "\x08"):
+            self.input = self.input[:-1]
+            return True
+        if key.isprintable() and len(key) == 1:
+            self.input += key
+        return True
+
+    def submit(self):
+        message = self.input.strip()
+        self.input = ""
+        if not message:
+            return True
+        if message.startswith("/"):
+            return self.slash(message)
+        self.ask(message)
+        return True
+
+    def slash(self, message):
+        parts = message[1:].split()
+        cmd = parts[0].lower() if parts else ""
+        if cmd in ("quit", "exit", "q"):
+            return False
+        if cmd == "run":
             self.action_cycle()
-        elif key in ("d", "D"):
-            self.mode = "deploy"
-        elif key in ("b", "B"):
+        elif cmd == "backtest":
             self.action_backtest()
-        elif key in ("t", "T"):
-            self.action_theme()
+        elif cmd == "deploy":
+            if len(parts) > 1 and parts[1] in analysts.ROSTER:
+                self._say("system", f"→ deploying {parts[1]} …")
+                self.action_deploy(parts[1])
+            else:
+                self.status = ui.warn("deploy who? " + " ".join(analysts.ROSTER))
+        elif cmd == "theme":
+            self.action_theme(parts[1] if len(parts) > 1 else None)
+        elif cmd in ("dash", "dashboard"):
+            if self.view != "dash":
+                self.view = "dash"
+                self.switch_anim = True
+        elif cmd == "chat":
+            if self.view != "chat":
+                self.view = "chat"
+                self.switch_anim = True
+        else:
+            self.status = ui.warn(f"unknown command /{cmd} — /run /deploy /backtest /theme /quit")
         return True
 
     # -------- lifecycle
 
+    def _draw(self, rows):
+        sys.stdout.write("\033[H" + "\r\n".join(row + "\033[K" for row in rows))
+        sys.stdout.flush()
+
+    def _animate(self, width, height):
+        """Top-to-bottom reveal when flipping between pages."""
+        rows = self.build(width, height)
+        step = max(2, height // 14)
+        for k in range(step, height + step, step):
+            self._draw(rows[:k] + [""] * (height - min(k, height)))
+            time.sleep(0.016)
+        self.switch_anim = False
+
     def run(self):
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
-        sys.stdout.write("\033[?1049h\033[?25l")  # alt screen, hide cursor
+        sys.stdout.write("\033[?1049h\033[?25l")
         self.board.start()
         try:
             tty.setcbreak(fd)
             alive = True
             while alive:
                 width, height = shutil.get_terminal_size((110, 32))
-                rows = self.build(width, height)
-                sys.stdout.write("\033[H" + "\r\n".join(
-                    row + "\033[K" for row in rows))
-                sys.stdout.flush()
-                readable, _, _ = _select.select([fd], [], [], 1.0)
+                if self.switch_anim:
+                    self._animate(width, height)
+                self._draw(self.build(width, height))
+                animating = self.thinking or (
+                    self.transcript and self.transcript[-1][0] == "assistant"
+                    and self.reveal < len(self.transcript[-1][1]))
+                if self.transcript and self.transcript[-1][0] == "assistant":
+                    remaining = len(self.transcript[-1][1]) - self.reveal
+                    if remaining > 0:
+                        self.reveal += max(3, remaining // 12)
+                readable, _, _ = _select.select([fd], [], [], 0.07 if animating else 1.0)
                 if readable:
-                    key = os.read(fd, 8).decode(errors="ignore")
-                    if key:
-                        alive = self.handle(key[0] if key[0] != "\x1b" or len(key) == 1 else "\x1b")
+                    burst = os.read(fd, 64).decode(errors="ignore")
+                    if burst == "\x1b":
+                        alive = self.handle("\x1b")
+                    else:
+                        # strip whole escape sequences (arrows etc.) so they
+                        # never leak characters into the chat input
+                        cleaned = re.sub(r"\x1b(\[[0-9;]*[A-Za-z~])?", "", burst)
+                        for ch in cleaned:
+                            alive = self.handle(ch)
+                            if not alive:
+                                break
         finally:
             self.board.stop()
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
