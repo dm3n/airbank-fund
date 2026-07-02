@@ -1,5 +1,6 @@
-"""First-run onboarding: a step-through terminal wizard (contract assertions
-28–30). Persists choices to ~/.airbank/config.json; secrets to config.env."""
+"""First-run onboarding: a step-through terminal wizard (contract §G).
+Persists the mandate + mode to ~/.airbank/config.json, then autonomously
+starts the 24/7 loop and opens the terminal."""
 import json
 import shutil
 import sys
@@ -13,196 +14,112 @@ STEPS = 3
 def _header(step, title):
     ui.clear()
     print(ui.accent(ui.BANNER))
-    print(ui.bold("  Airbank by Finsider") + ui.dim("  ·  fund setup"))
+    print(ui.bold("  Airbank by Finsider") + ui.dim("  ·  bank setup"))
     print()
     print(ui.dim(f"  step {step}/{STEPS} ") + ui.bold(title))
     ui.hr()
 
 
-def _valid_cash(value):
+def _valid_money(value):
     try:
-        v = float(value.replace(",", "").replace("$", ""))
+        v = float(value.replace(",", "").replace("$", "").replace("m", "000000").replace("M", "000000"))
     except ValueError:
-        return False, "enter a number, e.g. 100000"
-    if not 100 <= v <= 1_000_000_000:
-        return False, "between $100 and $1B please"
+        return False, "enter a number, e.g. 1,000,000 or 5M"
+    if not 10_000 <= v <= 10**10:
+        return False, "between $10k and $10B please"
     return True, ""
 
 
-def _valid_address(chain):
-    def check(value):
-        if chain == "btc" and 26 <= len(value) <= 62:
-            return True, ""
-        if chain == "eth" and value.startswith("0x") and len(value) == 42:
-            return True, ""
-        return False, f"that doesn't look like a {chain.upper()} address"
-    return check
-
-
-def _reset_account_state_if_changed(account):
-    """A new account is a fresh book: drop portfolio views, history, counters
-    from the previous account. Strategy gates survive (account-independent)."""
-    from .state import load_state, log, save_state
-    if config.load_product_config().get("account") == account:
-        return
-    state = load_state()
-    for key in ("mock", "wallet_view", "portfolio_view", "equity_history",
-                "pending_approvals", "positions"):
-        state.pop(key, None)
-    state["pending_approvals"] = []
-    state["trades_today"] = 0
-    state["day_start_equity"] = None
-    save_state(state)
-    log("account-switch", f"state reset for new {account['type']} account")
+def _money(value):
+    return float(value.replace(",", "").replace("$", "").replace("m", "000000").replace("M", "000000"))
 
 
 def run():
     """Returns True when a config was written."""
     product = {"created_utc": datetime.now(timezone.utc).isoformat()}
-    secrets = []
 
     # ---- step 1: welcome
     _header(1, "Welcome")
     print("""
-  You're sixty seconds from a running AI-native hedge fund.
+  You're sixty seconds from a running AI-native investment bank.
 
-  The fund is an agent loop: it gathers market data, computes systematic
-  signals, has an LLM analyst judge every trade, executes within hard
-  risk caps, and grades itself against a written contract every cycle.
+  Airbank is an agent loop that works your M&A pipeline 24/7: it sources
+  targets across channels, drafts personalized outreach, converts leads,
+  runs Finsider-grade financial diligence pre-LOI, and carries deals
+  through LOI, post-LOI QoE, and close.
 
-  Nothing here touches real money unless you explicitly wire a live
-  brokerage account — and even then, every trade waits for your approval.
+  In live mode nothing external ever happens without your approval —
+  outreach and LOIs queue as pending actions until you sign off.
 """)
-    ui.select("Ready?", ["Let's build the fund"], ["enter to continue"])
+    ui.select("Ready?", ["Let's build the bank"], ["enter to continue"])
 
-    # ---- step 2: account
-    _header(2, "Choose your account")
+    # ---- step 2: mode + mandate
+    _header(2, "Your mandate")
     print()
-    kinds = ["mock", "alpaca_paper", "alpaca_live", "wallet", "mirror"]
-    idx = ui.select(
-        "How should the fund trade?",
-        ["Mock portfolio", "Alpaca paper", "Alpaca live",
-         "Watch-only crypto wallet", "Mirror another account"],
-        ["simulated cash, real market prices — zero setup, the default",
-         "Alpaca's free paper-trading account (needs API keys)",
-         "real money — triple-locked, every trade needs your approval",
-         "track a public BTC/ETH address; the fund researches but never trades",
-         "replicate any wallet, brokerage, or portfolio here — and manage it"])
-    account = {"type": kinds[idx]}
+    mode_idx = ui.select(
+        "How should the bank run?",
+        ["Simulation", "Live pipeline"],
+        ["hands-free demo deal flow — the full pipeline moves 24/7, zero setup",
+         "real leads via ~/.airbank/leads/ (SearchFunder, Sales Navigator, "
+         "Dripify, Origami exports) — every external action needs your approval"])
+    product["mode"] = ["simulation", "live"][mode_idx]
     print()
-
-    if kinds[idx] == "mock":
-        cash = ui.text("  Starting cash", default="100,000",
-                       validate=_valid_cash, prefix="$")
-        account["starting_cash"] = float(cash.replace(",", "").replace("$", ""))
-        pos = max(100.0, account["starting_cash"] * 0.02)
-        gross = max(500.0, account["starting_cash"] * 0.10)
-        print(ui.dim(f"  risk caps scale with your bankroll: "
-                     f"{ui.money(pos)}/position, {ui.money(gross)} gross"))
-    elif kinds[idx] in ("alpaca_paper", "alpaca_live"):
-        if kinds[idx] == "alpaca_live":
-            print(ui.bad(ui.bold("  LIVE MONEY.")) + " Three locks apply: this choice, "
-                  "live_ack in state, and per-trade approval.")
-            print()
-        key = ui.text("  Alpaca API key")
-        secret = ui.text("  Alpaca API secret", secret=True)
-        if key:
-            secrets += [f"ALPACA_API_KEY={key}", f"ALPACA_API_SECRET={secret}"]
-        else:
-            print(ui.warn("  no key entered — the fund will run in research mode"))
-    elif kinds[idx] == "wallet":
-        chain_idx = ui.select("Which chain?", ["Bitcoin", "Ethereum"],
-                              ["public address, e.g. bc1q…", "public address, 0x…"])
-        chain = ["btc", "eth"][chain_idx]
-        address = ui.text(f"  {chain.upper()} address", validate=_valid_address(chain))
-        account["wallet"] = {"chain": chain, "address": address}
-    else:  # mirror
-        src_idx = ui.select(
-            "What should Airbank mirror?",
-            ["Crypto wallet", "Alpaca account", "Holdings file"],
-            ["a public BTC/ETH address — its balance becomes your book",
-             "your connected Alpaca positions, replicated here",
-             "any portfolio: drop holdings into ~/.airbank/mirror.json"])
-        if src_idx == 0:
-            chain_idx = ui.select("Which chain?", ["Bitcoin", "Ethereum"],
-                                  ["public address, e.g. bc1q…", "public address, 0x…"])
-            chain = ["btc", "eth"][chain_idx]
-            address = ui.text(f"  {chain.upper()} address", validate=_valid_address(chain))
-            account["mirror"] = {"source": "wallet", "chain": chain, "address": address}
-        elif src_idx == 1:
-            key = ui.text("  Alpaca API key")
-            secret = ui.text("  Alpaca API secret", secret=True) if key else ""
-            if key:
-                secrets += [f"ALPACA_API_KEY={key}", f"ALPACA_API_SECRET={secret}"]
-            account["mirror"] = {"source": "alpaca"}
-        else:
-            from . import mirror as mirror_mod
-            path = mirror_mod.write_template()
-            print(ui.dim(f"  edit your holdings anytime: {path}"))
-            account["mirror"] = {"source": "file"}
-        cash = ui.text("  Bankroll to mirror with", default="100,000",
-                       validate=_valid_cash, prefix="$")
-        account["starting_cash"] = float(cash.replace(",", "").replace("$", ""))
-        print(ui.dim("  the fund rebalances to the source every cycle — "
-                     "long-only, unlevered, inside this bankroll"))
-    product["account"] = account
+    firm = ui.text("  Firm name", default="Airbank Capital")
+    sectors_raw = ui.text("  Target sectors (comma-separated, blank = all)",
+                          default="")
+    lo = ui.text("  Deal size floor (revenue)", default="1,000,000",
+                 validate=_valid_money, prefix="$")
+    hi = ui.text("  Deal size ceiling (revenue)", default="25,000,000",
+                 validate=_valid_money, prefix="$")
+    product["mandate"] = {
+        "firm": firm or "Airbank Capital",
+        "sectors": [s.strip().lower() for s in sectors_raw.split(",") if s.strip()],
+        "size_min": _money(lo),
+        "size_max": max(_money(hi), _money(lo)),
+    }
+    if product["mode"] == "live":
+        print()
+        print(ui.dim("  connect your sources by dropping exports into "
+                     f"{config.HOME_DIR / 'leads'}/"))
+        print(ui.dim("  (JSON or CSV with a `company` column — SearchFunder, "
+                     "Sales Navigator, Dripify/Zapier, Origami all export there)"))
 
     # ---- step 3: confirm + save
     _header(3, "Confirm")
     print()
-    label = {"mock": f"Mock portfolio · {ui.money(account.get('starting_cash', 0))} starting cash",
-             "alpaca_paper": "Alpaca paper trading",
-             "alpaca_live": "Alpaca LIVE (approval-gated)",
-             "wallet": f"Watch-only {account.get('wallet', {}).get('chain', '?').upper()} wallet",
-             "mirror": f"Mirror · {account.get('mirror', {}).get('source', '?')} · "
-                       f"{ui.money(account.get('starting_cash', 0))} bankroll"}
-    print(f"  account   {ui.bold(label[account['type']])}")
+    m = product["mandate"]
+    print(f"  firm      {ui.bold(m['firm'])}")
+    print(f"  mode      {ui.bold(product['mode'])}")
+    print(f"  sectors   {ui.bold(', '.join(m['sectors']) or 'all')}")
+    size_range = "${:,.0f} – ${:,.0f}".format(m["size_min"], m["size_max"])
+    print(f"  size      {ui.bold(size_range)} revenue")
     print(f"  config    {ui.dim(str(config.CONFIG_JSON))}")
     print(f"  contract  {ui.dim(str(config.HOME_DIR / 'contract.md'))}")
     print()
-    if ui.select("Save and launch?", ["Save — let's print alpha", "Start over"],
+    if ui.select("Save and launch?", ["Save — open the pipeline", "Start over"],
                  ["", "re-run the wizard"]) == 1:
         return run()
 
     product["onboarded"] = True
     config.HOME_DIR.mkdir(parents=True, exist_ok=True)
     config.STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _reset_account_state_if_changed(account)
+    (config.HOME_DIR / "leads").mkdir(parents=True, exist_ok=True)
     config.CONFIG_JSON.write_text(json.dumps(product, indent=2) + "\n")
     contract_dst = config.HOME_DIR / "contract.md"
-    if not contract_dst.exists():
-        shutil.copy(config.PKG_DIR / "contract.md", contract_dst)
-    if secrets:
-        existing = config.CONFIG_ENV.read_text() if config.CONFIG_ENV.exists() else ""
-        keep = [l for l in existing.splitlines()
-                if l and not l.startswith(("ALPACA_API_KEY", "ALPACA_API_SECRET"))]
-        config.CONFIG_ENV.write_text("\n".join(keep + secrets) + "\n")
-        config.CONFIG_ENV.chmod(0o600)
+    shutil.copy(config.PKG_DIR / "contract.md", contract_dst)
 
     print()
-    print(ui.good(ui.bold("  ✓ fund configured")))
+    print(ui.good(ui.bold("  ✓ the bank is configured")))
     _autonomous_setup()
     return True
 
 
 def _autonomous_setup():
-    """Seamless finish: gate the strategies and start the 24/7 loop without
-    asking the user to learn commands. The terminal opens right after."""
-    from .state import load_state
-    if not load_state().get("strategy_gates"):
-        print(ui.dim("\n  gating strategies on a year of market data …"))
-        try:
-            from . import backtest
-            results = backtest.run(365)
-            for name, r in results.items():
-                badge = ui.good("ELIGIBLE") if r["eligible"] else ui.dim("benched")
-                print(f"    {name:<10s} sharpe {r['portfolio']['sharpe']:5.2f}  {badge}")
-        except Exception as exc:
-            print(ui.warn(f"    backtest skipped ({str(exc)[:50]}) — press B in the terminal"))
+    """Seamless finish: start the 24/7 loop and open the terminal."""
     try:
         from .cli import PLIST_PATH, cmd_start
         if not PLIST_PATH.exists():
-            print(ui.dim("\n  starting the 24/7 loop …"))
+            print(ui.dim("\n  starting the 24/7 sourcing loop …"))
             cmd_start()
     except Exception as exc:
         print(ui.warn(f"  loop not started ({str(exc)[:50]}) — run `airbank start`"))

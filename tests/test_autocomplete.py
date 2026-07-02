@@ -20,9 +20,9 @@ class SuggestionTests(unittest.TestCase):
 
     def test_deploy_continues_into_analysts(self):
         term = Terminal()
-        term.input = "/deploy pre"
+        term.input = "/deploy scr"
         matches = term.suggestions()
-        self.assertEqual([m[0] for m in matches], ["/deploy premarket"])
+        self.assertEqual([m[0] for m in matches], ["/deploy screening"])
 
     def test_no_suggestions_for_plain_text(self):
         term = Terminal()
@@ -31,9 +31,9 @@ class SuggestionTests(unittest.TestCase):
 
     def test_tab_completes_selected(self):
         term = Terminal()
-        term.input = "/ba"
+        term.input = "/ru"
         term.handle("\t")
-        self.assertEqual(term.input, "/backtest")
+        self.assertEqual(term.input, "/run")
 
     def test_tab_on_deploy_leaves_room_for_analyst(self):
         term = Terminal()

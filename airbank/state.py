@@ -12,13 +12,14 @@ LOG_FILE = STATE_DIR / "log.md"
 DEFAULT_STATE = {
     "halt": False,
     "halt_reason": "",
-    "live_ack": False,
     "day": "",
-    "day_start_equity": None,
-    "trades_today": 0,
     "pending_approvals": [],
-    "positions": {},
-    "strategy_gates": {},
+    "pipeline": {"deals": {}},
+    "source_stats": {},
+    "analyst_desk": {},
+    "funnel_view": {},
+    "pipeline_history": [],
+    "outreach_days": {},
     "last_cycle_utc": "",
     "consecutive_failures": 0,
 }
@@ -55,12 +56,6 @@ def log(op, title, body=""):
         f.write(entry + "\n")
 
 
-def roll_day(state, equity):
-    """Reset daily counters on a new UTC day; anchor equity for kill switch."""
-    today = now_utc().strftime("%Y-%m-%d")
-    if state["day"] != today:
-        state["day"] = today
-        state["day_start_equity"] = equity
-        state["trades_today"] = 0
-    elif state["day_start_equity"] is None and equity is not None:
-        state["day_start_equity"] = equity
+def roll_day(state, _unused=None):
+    """Mark the working day for daily counters."""
+    state["day"] = now_utc().strftime("%Y-%m-%d")

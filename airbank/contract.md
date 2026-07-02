@@ -1,176 +1,130 @@
-# Airbank by Finsider — Loop Contract v2
+# Airbank by Finsider — Loop Contract v3
 
-The world's first AI-native hedge fund. This contract is what gets graded. The
+The AI-native investment bank. This contract is what gets graded. The
 Evaluator halts the loop on any CRITICAL breach; the build is judged only
 against the assertions below.
 
 ## Mission
 
-A 24/7 loop (gather → reason → act → verify → repeat) that researches crypto
-and US equities, generates hybrid alpha (systematic signals gated by an LLM
-analyst), and executes through Alpaca. Live trades NEVER execute without
-Daniel's explicit per-trade approval. Paper mode may auto-execute.
+A 24/7 agent loop (gather → reason → act → verify → repeat) that runs the
+entire M&A pipeline: automated prospecting across deal sources, personalized
+outreach, lead conversion, Finsider-style pre-LOI financial diligence, LOI,
+post-LOI QoE, and close. NOTHING leaves the building without approval in
+live mode: outreach messages and LOIs are pending actions until a human
+approves. Simulation mode runs the full pipeline hands-free on demo deal
+flow so the product works out of the box.
 
 ## Roles (loops.md rule 2)
 
-- **Planner** — `contract.md` + per-cycle regime assessment. Sets universe,
-  enabled strategies, risk budget. Never places orders.
-- **Generator** — `signals.py` + `analyst.py`. Produces trade proposals.
-  Forbidden from grading its own proposals.
+- **Planner** — this contract + the mandate (sectors, deal size, guardrails
+  set in onboarding). Never contacts a lead.
+- **Generator** — sourcing, outreach drafting, diligence analysis. Forbidden
+  from grading its own work.
 - **Evaluator** — `evaluator.py`. Assumes every cycle is broken and tries to
-  prove it against this contract. Owns the halt switch.
+  prove it. Owns the halt switch.
 
 ## State (rule 4) — exactly 3 files, crash-resume
 
 1. `contract.md` (this file) — never mutated by the loop.
-2. `state/state.json` — positions view, pending approvals, strategy params,
-   daily P&L anchor, halt flag, last-cycle timestamp.
-3. `state/log.md` — append-only, `## [YYYY-MM-DD HH:MM] op | title` entries.
+2. `state/state.json` — the pipeline (all deals + stages), source stats,
+   pending approvals, day counters, halt flag.
+3. `state/log.md` — append-only tape, `## [YYYY-MM-DD HH:MM] op | title`.
 
-## Hard risk caps (CRITICAL — Evaluator halts on breach)
+Deal artifacts (financials in, memos out) live under `~/.airbank/deals/<id>/`
+— deliverables, not loop state.
 
-| Cap | Value |
+## Guardrails (CRITICAL — Evaluator halts on breach)
+
+| Guardrail | Value |
 |---|---|
-| Mode default | `paper` (live requires `AIRBANK_MODE=live` AND live keys AND `live_ack: true` in state) |
-| Live approval | Every live order requires explicit human approval; approvals expire after 4h |
-| Max position size | $200 per position (live), $2,000 (paper) |
-| Max gross exposure | $1,000 (live), $10,000 (paper) |
-| Max trades per day | 10 |
-| Daily loss kill switch | -3% of equity → halt, notify, require manual resume |
-| Stale data | No entry on data older than 20 min (crypto) / 30 min (equities) |
-| Order types | Market/limit, long-only v1. No margin, no shorts, no options, no leverage |
+| Mode default | `simulation` (live requires explicit onboarding choice) |
+| External sends | In live mode NO outreach is sent autonomously — drafts queue as pending approvals; approved messages land in `~/.airbank/outbox/` for the connected sender. Airbank never emails anyone directly. |
+| LOI | Issuing an LOI is always an approval in live mode (72h expiry) |
+| Outreach volume | ≤ 25 new first-touches per day; ≤ 3 touches per lead, then the lead rests |
+| Diligence honesty | Every number in a diligence memo traces to the provided financials — metrics are computed deterministically in code; the LLM only narrates. No documents → no memo, the deal waits. |
+| Stage discipline | Deals advance one stage at a time through: sourced → contacted → engaged → nda → pre_loi → loi → post_loi → closing → closed (or → dead). No skipping. |
 
 ## Testable assertions
 
 ### A. Loop mechanics
-1. A single cycle runs end-to-end via `python3 cli.py run-once` and exits 0.
-2. The loop crash-resumes: delete nothing, kill mid-cycle, next run recovers
+1. One cycle runs end-to-end via `airbank run` and exits 0; crash-resume
    from the 3 state files alone.
-3. Every cycle appends exactly one `cycle` entry to `log.md`.
-4. `state.json` is always valid JSON after any cycle (atomic writes).
-5. Equities entries are only proposed during regular US market hours;
-   crypto proposals are allowed 24/7.
-6. A halted loop performs gather/verify but proposes and executes nothing.
-7. `python3 cli.py status` renders state without touching the network.
+2. Every cycle appends exactly one `cycle` entry to the tape; `state.json`
+   stays valid JSON (atomic writes).
+3. A halted loop gathers and verifies but sources, contacts, and advances
+   nothing.
+4. `airbank status` renders the pipeline without touching the network.
 
-### B. Signals (Generator, systematic)
-8. Momentum signal: long only when fast MA > slow MA and lookback return > 0.
-9. Mean-reversion signal: entry only when z-score < -2.0; exit when z ≥ 0.
-10. Volatility filter: no new entries when realized vol > 2× trailing median.
-11. Signals compute from public keyless data (Coinbase candles, Stooq CSV)
-    when Alpaca keys are absent — research mode works with zero setup.
-12. Each strategy must pass the backtest gate (assertion 20) before its
-    proposals are eligible for execution; ineligible strategies log only.
+### B. Sourcing (Generator)
+5. Sources are adapters: `demo` (simulation deal flow), `inbox`
+   (~/.airbank/leads/ — drop JSON/CSV from ANY tool: SearchFunder exports,
+   LinkedIn Sales Navigator, Dripify webhooks, Origami, Zapier), and
+   configured connectors. Unknown files never crash the loop.
+6. Every sourced lead gets: company, sector, source, size estimate, contact,
+   and a deterministic fit score (0–100) against the mandate before any
+   agent touches it.
+7. Duplicate companies (same normalized name) are merged, never re-added.
+8. Per-source daily lead counts are tracked for the flow board (14-day ring).
 
-### C. LLM analyst gate (Generator, narrative)
-13. Every execution-eligible ENTRY passes through the analyst (`claude -p`)
-    and gets a JSON verdict: proceed|veto, conviction ∈ [0,1], thesis.
-    EXITS are risk-reducing and never wait on the analyst — a long-only fund
-    must always be able to get flat.
-14. Analyst failure (timeout, bad JSON) → entry is dropped, never executed.
-15. Final size = base size × conviction, then re-checked against caps.
-16. The analyst verdict and thesis are persisted in the log entry.
+### C. Outreach (Generator)
+9. Outreach sequences are drafted by the LLM, personalized from the lead's
+   own fields — grounded, no invented facts about the target.
+10. Live mode: drafts become pending approvals; `airbank approve <id>`
+    moves the message to the outbox. Nothing external happens before that.
+11. Simulation: sends are simulated and responses arrive probabilistically,
+    weighted by fit score — the funnel moves 24/7 hands-free.
+12. Volume guardrails (assertion table) are enforced in code, not prompts.
 
-### D. Risk & execution
-17. No order is submitted that would breach any cap in the table above.
-18. In live mode, an order without a matching approved-and-unexpired approval
-    id is refused at the broker layer (belt and suspenders: checked in
-    approvals AND broker).
-19. Daily loss beyond the kill switch sets `halt: true` and sends a
-    notification; the loop stays halted across restarts until manual resume.
+### D. Diligence (the Finsider engine)
+13. Pre-LOI diligence runs when financials exist in the deal folder:
+    revenue trend & growth, gross/EBITDA margins and volatility, customer
+    concentration, working-capital signals — computed in Python.
+14. The memo cites the computed metrics, scores the deal 0–100, and ends
+    proceed / pass / needs-more-data. LLM failure → no memo, deal waits.
+15. Post-LOI produces the deeper QoE-style report over the same engine and
+    a closing checklist; both file to the deal folder and the research desk.
+16. In simulation, demo deals get generated monthly P&L files so the real
+    diligence engine crunches real numbers end to end.
 
-### E. Backtest gate
-20. `python3 cli.py backtest` runs on ≥ 1 year of daily bars per symbol and
-    reports total return, max drawdown, Sharpe, and buy-and-hold benchmark.
-21. A strategy is execution-eligible only if backtest Sharpe > 0.5 AND it
-    outperforms buy-and-hold OR has max drawdown < half of buy-and-hold's.
-22. Backtest results are written into `state.json` under `strategy_gates`.
+### E. Stage engine
+17. Advancement criteria are explicit per stage and logged with reasons;
+    the tape shows every transition.
+18. LOI issuance in live mode requires an unexpired approval — checked at
+    the stage engine AND where the LOI document is written (two layers).
+19. Dead deals keep their history; nothing is deleted.
 
 ### F. Evaluator (rule 6 rubric)
-23. Evaluator runs after every cycle and scores it in [0,1] on four axes:
-    risk discipline (0.4), data integrity (0.2), thesis quality (0.2),
-    process hygiene (0.2). Score < 0.6 → warning; CRITICAL breach → halt.
-24. Evaluator is a separate module with a separate prompt; the Generator
-    never sets its own score.
-25. All unit tests pass: `python3 -m unittest discover tests`.
+20. Scores every cycle in [0,1]: pipeline discipline (0.4), data integrity
+    (0.2), artifact quality (0.2), process hygiene (0.2). CRITICAL → halt.
+21. Evaluator never generates pipeline work; the Generator never scores.
+22. All unit tests pass: `python3 -m unittest discover tests`.
 
-### G. Ops
-26. LaunchAgent plist provided but NOT auto-loaded; install is a deliberate
-    `ops/install-launchd.sh` step.
-27. Secrets only from `~/.config/finsider-stack/stack.env`; never printed,
-    never committed. `.gitignore` covers `state/` and any `.env`.
+### G. The terminal (carried from v2 — the UX stays)
+23. Bare `airbank` on a TTY opens the terminal; first run onboards
+    seamlessly (wizard → auto-start the 24/7 loop → land on the dashboard).
+24. Three views — dashboard, hybrid, chat — same shark-blue standard
+    profile, breathing thinker, heat-mapped graphs, chat-bar-first
+    interaction, slash autocomplete. Panels: DEAL FLOW (sources),
+    PIPELINE (funnel + top deals), CAMPAIGN · GUARDRAILS, DEAL TEAM,
+    TAPE. The ticker strip streams pipeline events.
+25. The desk chat is grounded in the live pipeline and can drive the
+    terminal via the ACTION protocol; approvals stay explicit CLI commands.
+26. The deal team (analyst roster) deploys on demand and files markdown
+    reports to ~/.airbank/research/; reports are advisory only.
 
-### H. Product: onboarding, accounts, themes (v1.1)
-28. First run of any operating command without a saved config launches the
-    interactive onboarding wizard; the wizard also runs via `airbank init`.
-29. Onboarding is a step-through terminal UX (arrow keys on a TTY, numbered
-    fallback when piped) and persists every choice to `~/.airbank/config.json`;
-    secrets go only to `~/.airbank/config.env` (0600).
-30. Account types: `mock` (simulated portfolio, user-chosen starting cash),
-    `alpaca_paper`, `alpaca_live`, `wallet` (watch-only crypto address).
-31. The mock engine fills orders at real market prices, tracks cash /
-    positions / realized P&L inside `state.json` (still 3 state files), and
-    obeys the same risk layer as real accounts. Mock caps scale with starting
-    cash: 2% per position, 10% gross (floors: $100 / $500).
-32. A watch-only wallet account can never submit an order — `can_execute`
-    is false at the broker layer, independent of upstream checks.
-33. `alpaca_live` remains triple-locked: chosen in onboarding, `live_ack`
-    in state, per-trade approval.
-34. One standard color profile: body text is the terminal's white, links
-    are blue, code renders as inline chips, and the brand is shark blue —
-    dark Finsider blue for the cursor, accents, and the breathing widget,
-    a lighter shade for submitted text. Market data (tickers, sparklines,
-    P&L) stays multicolored. `NO_COLOR` is honored.
-35. `status` and `watch` render portfolio (cash, equity, positions, day and
-    total P&L) from state alone — no network. The loop refreshes the
-    portfolio view and an equity-history ring buffer (≤96 points) each cycle.
-
-### I. The terminal & the analyst desk (v2)
-36. Bare `airbank` on a TTY opens the full-screen live terminal (after
-    onboarding); piped/non-TTY callers get help instead of a hung screen.
-37. The terminal can trigger cycles, backtests, and analyst deployments, but
-    live-money approvals remain explicit CLI commands — never a single
-    accidental keypress.
-38. Quotes stream on a background thread; the terminal's key handling and
-    redraw never block on the network. Only the main thread draws.
-39. Analyst desk: a pre-built roster (premarket, macro, crypto, equity, risk,
-    journal) deployable via `airbank deploy <name>` or the terminal. Every
-    deployment gathers fresh fund context, files a timestamped markdown
-    report in ~/.airbank/research/, and records status in state.
-40. Analyst reports are advisory only — the desk has no code path to an
-    order. Only the loop trades.
-41. Onboarding: the cash prompt carries a `$` at the input point.
-
-### J. Mirror accounts & views (v2.3)
-42. Account type `mirror` replicates an external portfolio — a public crypto
-    wallet, the connected Alpaca account, or any holdings in
-    ~/.airbank/mirror.json — into the fund's own book at real prices,
-    scaled to a user-chosen bankroll.
-43. Mirror rebalances are mechanical: they bypass the analyst gate but stay
-    long-only and unlevered (cash is the constraint), skip drifts under 1%
-    of equity, and log every trade to the tape. The signals engine never
-    trades on a mirrored book.
-44. The kill switch, marks, P&L, analysts, and chat treat a mirror book
-    exactly like any other.
-45. Three views: dashboard, hybrid (the desk chat replaces only the TAPE
-    panel, the grid stays), and full chat. A message sent from the
-    dashboard lands in hybrid; esc always steps back toward the dashboard.
-46. While the desk thinks, the indicator text BREATHES: its color steps
-    through the shark-blue ramp one shade at a time (~2.5s per full breath),
-    never flashing, in both the chat and the status line.
-47. Typing `/` opens Claude Code-style autocomplete under the input bar:
-    closest command matches with descriptions, ↑↓ to choose, tab to
-    complete, enter to run the highlighted pick. `/deploy` continues into
-    analyst-name suggestions.
+### H. Ops
+27. Secrets only from env files (0600); never printed, never committed.
+    Connector keys (Origami, etc.) are optional — the inbox adapter is the
+    universal integration until keys are wired.
 
 ## Rubric calibration (rule 6)
 
-Good cycle: fresh data, few high-conviction proposals with specific falsifiable
-theses, all caps honored, clean log entry. Slop cycle: many low-conviction
-trades, vague theses ("looks bullish"), stale data tolerated, caps checked
-only in one layer, log noise.
+Good cycle: fresh leads deduped and scored, outreach personalized and inside
+volume caps, stages advanced with logged reasons, memos grounded in computed
+numbers. Slop cycle: generic outreach, invented company facts, stage jumps,
+memos with numbers that trace to nothing, silent guardrail breaches.
 
 ## Restart policy (rule 5)
 
-On repeated cycle failures (3 consecutive), the loop halts and notifies rather
-than patch-piling. Humans are inserted only when this contract is wrong.
+3 consecutive cycle failures → halt and notify, never patch-pile. Humans are
+inserted only when this contract is wrong.

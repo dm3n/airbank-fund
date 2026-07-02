@@ -1,8 +1,8 @@
-"""The Airbank terminal: a full-screen Bloomberg-style fund view with a
-Claude Code-style chat bar as the primary way to drive it. Typing bare
-`airbank` lands here (contract assertion 36). Background threads stream
-quotes and run actions; only the main thread draws (assertion 38).
-Live-money approvals stay explicit CLI commands (assertion 37)."""
+"""The Airbank terminal: the full-screen live view of the AI-native
+investment bank, with the Claude Code-style chat bar as the primary way to
+drive it. Typing bare `airbank` lands here (contract assertion 23). Panels:
+DEAL FLOW · PIPELINE · CAMPAIGN & GUARDRAILS · DEAL TEAM · TAPE. Only the
+main thread draws; approvals stay explicit CLI commands (assertion 25)."""
 import os
 import re
 import select as _select
@@ -15,23 +15,25 @@ import time
 import tty
 from datetime import datetime, timezone
 
-from . import analysts, chat, config, ui
-from .quotes import QuoteBoard
+from . import analysts, chat, config, pipeline, sources, ui
 from .state import LOG_FILE, load_state
 
 ANSI_RE = re.compile(r"\033\[[0-9;]*m")
-THINK_VERBS = ["thinking", "reading the tape", "checking the book",
-               "weighing it", "running the numbers"]
+THINK_VERBS = ["thinking", "reading the pipeline", "checking the funnel",
+               "weighing it", "working the numbers"]
 
 SLASH_COMMANDS = {
-    "/run": "run one cycle: gather → reason → act → verify",
-    "/deploy": "deploy an analyst — premarket · macro · crypto · equity · risk · journal",
-    "/backtest": "re-gate the strategies on a year of daily bars",
+    "/run": "run one cycle: source → advance → diligence → verify",
+    "/deploy": "deploy the deal team — sourcing · outreach · screening · diligence · market · pipeline-coach",
+    "/diligence": "run the Finsider diligence engine on a deal",
     "/dash": "the full dashboard",
     "/hybrid": "desk chat inside the grid",
     "/chat": "full-screen desk chat",
     "/quit": "leave the terminal (the 24/7 loop keeps running)",
 }
+
+TICKER_OPS = {"sourced": "SOURCED", "stage": "", "diligence": "DILIGENCE",
+              "approval-pending": "AWAITING", "analyst": "FILED"}
 
 
 def vlen(s):
@@ -43,7 +45,6 @@ def pad(s, width):
 
 
 def clip(s, width):
-    """Clip to visible width, keeping ANSI sanity by closing style at the end."""
     if vlen(s) <= width:
         return s
     out, visible, i = [], 0, 0
@@ -60,7 +61,6 @@ def clip(s, width):
 
 
 def panel(title, lines, width, height):
-    """A boxed panel with the title set into the top border."""
     inner = width - 2
     fill = max(0, inner - vlen(title) - 3)
     rows = [ui.dim("┌─") + ui.accent2(ui.bold(f" {title} ")) + ui.dim("─" * fill + "┐")]
@@ -81,36 +81,37 @@ def beside(a, b, gap=0):
     return out
 
 
-def us_market_open(now=None):
-    now = now or datetime.now(timezone.utc)
-    minutes = now.hour * 60 + now.minute
-    return now.weekday() < 5 and 13 * 60 + 30 <= minutes < 20 * 60
+def _tape_entries(limit=40):
+    """Recent tape headlines: (op, title) pairs, newest last."""
+    if not LOG_FILE.exists():
+        return []
+    entries = []
+    for line in LOG_FILE.read_text().splitlines():
+        m = re.match(r"## \[[\d\- :]+\] ([\w\-]+) \| (.+)", line)
+        if m:
+            entries.append((m.group(1), m.group(2)))
+    return entries[-limit:]
 
 
 # ---------------------------------------------------------------- the app
 
 class Terminal:
     def __init__(self):
-        self.board = QuoteBoard()
-        self.status = ui.dim("your fund is live — say something to the desk below")
+        self.status = ui.dim("the bank is live — say something to the desk below")
         self.view = "dash"            # dash | hybrid | chat
         self.input = ""
         self.transcript = []          # (role, text): user | assistant | system
         self.thinking = False
         self.think_started = 0.0
-        self.reveal = 0               # typewriter progress on last assistant msg
+        self.reveal = 0
         self.busy = ""
         self.frame = 0
         self.switch_anim = False
         self.sugg_idx = 0
-        self.quit = False
 
     def _breather(self):
-        """The working indicator: text that breathes. One full inhale/exhale
-        takes ~2.5s — the color steps through the shark-blue ramp one shade
-        at a time, no flashing, clean to the last pixel."""
         elapsed = time.time() - self.think_started
-        step = int(elapsed / 0.21)          # one shade every ~0.21s
+        step = int(elapsed / 0.21)
         verb = THINK_VERBS[int(elapsed) // 5 % len(THINK_VERBS)]
         return ui.breath(f"✻ {verb}… ({int(elapsed)}s)", step)
 
@@ -145,10 +146,11 @@ class Terminal:
     def action_cycle(self):
         def go():
             from .loop import run_cycle
-            self.status = ui.warn("CYCLE RUNNING — gather → reason → act → verify …")
+            self.status = ui.warn("CYCLE RUNNING — source → advance → diligence → verify …")
             score, cycle = run_cycle()
-            msg = (f"cycle done · score {score:.2f} · {len(cycle['candidates'])} candidates · "
-                   f"{len(cycle['executed'])} executed · {len(cycle['refused'])} refused")
+            msg = (f"cycle done · score {score:.2f} · {cycle['new_leads']} sourced · "
+                   f"{cycle['outreach']} outreach · {len(cycle['advanced'])} advanced · "
+                   f"{cycle['memos']} memos")
             self.status = ui.good(msg)
             self._say("system", msg)
         self._spawn("cycle", go)
@@ -161,28 +163,43 @@ class Terminal:
             self._say("system", f"{name} filed: {headline} → {path}")
         self._spawn(f"deploy:{name}", go)
 
-    def action_backtest(self):
+    def action_diligence(self, needle):
         def go():
-            from . import backtest
-            self.status = ui.warn("BACKTESTING the universe — one year of daily bars …")
-            results = backtest.run(365)
-            gates = ", ".join(f"{k} {'ELIGIBLE' if v['eligible'] else 'benched'}"
-                              for k, v in results.items())
-            self.status = ui.good(f"backtest done: {gates}")
-            self._say("system", f"backtest done: {gates}")
-        self._spawn("backtest", go)
+            from . import diligence
+            state = load_state()
+            deal = pipeline.find(state, needle)
+            if deal is None:
+                self.status = ui.warn(f"no deal matching {needle!r}")
+                return
+            self.status = ui.warn(f"DILIGENCE — {deal['company']} …")
+            if config.SIMULATION:
+                diligence.generate_demo_financials(deal)
+            kind = "post_loi" if deal["stage"] in ("loi", "post_loi", "closing") else "pre_loi"
+            m = diligence.run(state, deal, kind)
+            from .state import save_state
+            save_state(state)
+            if m is None:
+                msg = (f"{deal['company']}: waiting on financials — drop "
+                       f"financials.csv into {pipeline.deal_dir(deal['id'])}")
+                self.status = ui.warn(msg)
+                self._say("system", msg)
+            else:
+                msg = (f"{deal['company']} diligence: score {m['score']} · "
+                       + ("; ".join(m["flags"]) or "no flags"))
+                self.status = ui.good(msg)
+                self._say("system", msg + " · read it: airbank research")
+        self._spawn("diligence", go)
 
     def ask(self, message):
         self._say("user", message)
-        if self.view == "dash":       # chat lands where the tape was
+        if self.view == "dash":
             self._goto("hybrid")
         self.thinking = True
         self.think_started = time.time()
 
         def go():
             try:
-                reply, action = chat.respond(
-                    message, self.transcript[:-1], quotes=self.board.snapshot())
+                reply, action = chat.respond(message, self.transcript[:-1])
             finally:
                 self.thinking = False
             self._say("assistant", reply)
@@ -196,93 +213,87 @@ class Terminal:
         if verb == "run":
             self._say("system", "→ running a cycle …")
             self.action_cycle()
-        elif verb == "backtest":
-            self._say("system", "→ backtesting …")
-            self.action_backtest()
         elif verb == "deploy" and len(parts) > 1 and parts[1] in analysts.ROSTER:
             self._say("system", f"→ deploying {parts[1]} …")
             self.action_deploy(parts[1])
+        elif verb == "diligence" and len(parts) > 1:
+            self._say("system", f"→ diligence on {' '.join(parts[1:])} …")
+            self.action_diligence(" ".join(parts[1:]))
         elif verb:
             self._say("system", f"unknown action: {action}")
 
-    # -------- frame pieces (dash view — unchanged above the chat bar)
+    # -------- frame pieces
 
-    def _ticker(self, quotes, width):
+    def _ticker(self, width):
         items = []
-        for symbol, _ in self.board.symbols:
-            q = quotes.get(symbol)
-            if not q or q.get("price") is None:
+        for op, title in _tape_entries(18):
+            tag = TICKER_OPS.get(op)
+            if tag is None:
                 continue
-            arrow = ui.good("▲") if q["change_pct"] >= 0 else ui.bad("▼")
-            items.append(f"{ui.accent2(symbol)} {q['price']:,.2f} "
-                         f"{ui.pnl(q['change_pct'], pct=True)}{arrow}")
+            label = f"{tag} " if tag else ""
+            items.append(ui.accent2(label) + title)
         if not items:
-            return ui.dim(" … waiting for first prints …")
+            return ui.dim(" … the tape is quiet — the first leads are on their way …")
         start = self.frame // 3 % len(items)
-        strip = "   ".join(items[start:] + items[:start])
+        strip = ui.dim("  ·  ").join(items[start:] + items[:start])
         return clip(" " + strip, width)
 
-    def _markets(self, quotes):
-        lines = [ui.dim(f"{'SYM':<9}{'LAST':>12}  {'CHG%':>7}  TREND")]
-        for symbol, asset_class in self.board.symbols:
-            q = quotes.get(symbol)
-            if not q or q.get("price") is None:
-                lines.append(f"{symbol:<9}" + ui.dim(f"{'…':>12}"))
+    def _flow(self, state):
+        lines = [ui.dim(f"{'SOURCE':<13}{'LEADS':>6}{'RESP':>6}  14D FLOW")]
+        for src in sources.flow_board(state):
+            name = src["name"]
+            if not src["configured"]:
+                lines.append(f"{name:<13}" + ui.dim("awaiting keys — feeds via ~/.airbank/leads/"))
                 continue
-            spark = ui.sparkline(q["spark"], width=10) if len(q["spark"]) > 1 else ui.dim("·")
-            lines.append(f"{symbol:<9}{q['price']:>12,.2f}  "
-                         + pad(ui.pnl(q['change_pct'], pct=True), 7) + "  " + spark)
-        if self.board.error:
-            lines.append(ui.dim("feed: " + self.board.error))
+            spark = ui.sparkline(src["spark"], width=12) if len(src["spark"]) > 1 else ui.dim("·")
+            resp = f"{src['responses']}" if src["responses"] else ui.dim("—")
+            lines.append(f"{ui.accent2(name):<13}{src['total']:>6}" + pad(resp, 6) + "  " + spark)
         return lines
 
-    def _portfolio(self, state, view, width):
+    def _pipeline_panel(self, state, width):
         lines = []
-        equity = view.get("equity")
-        if equity is None:
-            lines.append(ui.dim("no book yet — ask the desk to run a cycle"))
+        view = state.get("funnel_view") or {}
+        counts = view.get("counts", {})
+        if not counts:
+            lines.append(ui.dim("no pipeline yet — the first cycle is coming"))
             return lines
-        day_pnl = 0.0
-        if state.get("day_start_equity"):
-            day_pnl = (equity / state["day_start_equity"] - 1) * 100
-        gross = sum(p.get("value", 0) for p in view.get("positions", []))
-        cap = config.CAPS["max_gross_usd"]
-        lines.append(f"EQUITY   {ui.bold(ui.money(equity)):<26} DAY      {ui.pnl(day_pnl, pct=True)}")
-        lines.append(f"CASH     {ui.money(view.get('cash', 0)):<17} TOTAL    {ui.pnl(view.get('total_pnl_pct', 0), pct=True)}")
-        realized = f"{ui.pnl(view['realized_pnl'])}" if "realized_pnl" in view else ui.dim("—")
-        lines.append(f"GROSS    {ui.money(gross)} / {ui.money(cap):<8} REALIZED {realized}")
-        lines.append(ui.sparkline(state.get("equity_history", []), width=min(46, width - 16))
-                     + ui.dim("  equity 24h"))
-        lines.append(ui.dim(f"{'POSITION':<12}{'QTY':>14}{'VALUE':>14}{'P&L':>9}"))
-        positions = view.get("positions", [])
-        if positions:
-            for p in positions[:5]:
-                lines.append(f"{ui.accent2(p['symbol']):<12}{p['qty']:>14,.6f}"
-                             f"{ui.money(p['value']):>14}  " + ui.pnl(p['pnl_pct'], pct=True))
-        else:
-            lines.append(ui.dim("(flat — the loop is hunting for setups)"))
+        active_value = sum(view.get("value", {}).get(s, 0) for s in pipeline.ACTIVE_STAGES)
+        lines.append(f"ACTIVE {ui.bold(str(view.get('active', 0)))} deals   "
+                     f"PIPELINE {ui.bold('$' + format(active_value, ',.0f'))} revenue   "
+                     f"CLOSED {ui.good(str(counts.get('closed', 0)))}")
+        funnel = "  ".join(
+            (ui.accent2(f"{pipeline.STAGE_LABEL[s]} {counts.get(s, 0)}")
+             if counts.get(s) else ui.dim(f"{pipeline.STAGE_LABEL[s]} 0"))
+            for s in pipeline.ACTIVE_STAGES)
+        lines.append(clip(funnel, width - 4))
+        lines.append(ui.sparkline(state.get("pipeline_history", []),
+                                  width=min(46, width - 18)) + ui.dim("  active deals, 24h"))
+        lines.append(ui.dim(f"{'DEAL':<24}{'STAGE':<10}{'FIT':>5}{'REVENUE':>13}"))
+        for d in pipeline.active_deals(state)[:5]:
+            lines.append(f"{ui.accent2(d['company'][:22]):<24}"
+                         f"{pipeline.STAGE_LABEL[d['stage']]:<10}{d['score']:>5.0f}"
+                         f"{'$' + format(d['revenue'], ',.0f'):>13}")
         pending = [a for a in state.get("pending_approvals", []) if a["status"] == "pending"]
         for a in pending[:2]:
-            o = a["order"]
-            lines.append(ui.warn(f"⏳ [{a['id']}] {o['side']} ${o['notional_usd']:.0f} "
-                                 f"{o['symbol']} — airbank approve {a['id']}"))
+            lines.append(ui.warn(f"⏳ [{a['id']}] {a['kind']} · {a['company']} — "
+                                 f"airbank approve {a['id']}"))
         return lines
 
-    def _gates(self, state):
-        lines = [ui.dim(f"{'STRATEGY':<11}{'STATE':<11}{'SHARPE':>7}{'RET':>8}{'MAXDD':>8}")]
-        gates = state.get("strategy_gates", {})
-        if not gates:
-            lines.append(ui.dim("no gates yet — ask the desk to backtest"))
-        for name, gate in gates.items():
-            badge = ui.good("● ELIGIBLE") if gate["eligible"] else ui.dim("○ benched ")
-            lines.append(f"{name.upper():<11}" + pad(badge, 11)
-                         + f"{gate['sharpe']:>7.2f}{gate['total_return']:>8.1%}{gate['max_drawdown']:>8.1%}")
-        lines.append("")
-        lines.append(ui.dim("RISK  ")
-                     + f"trades {state.get('trades_today', 0)}/{config.CAPS['max_trades_per_day']}"
-                     + f"  kill {config.CAPS['daily_loss_limit_pct']:.0f}%/d"
-                     + f"  cap ${config.CAPS['max_position_usd']:,.0f}"
-                     + f"  gross ${config.CAPS['max_gross_usd']:,.0f}")
+    def _campaign(self, state):
+        m = config.MANDATE
+        sectors = ", ".join(m.get("sectors", [])) or "all sectors"
+        lines = [f"MANDATE  {ui.accent2(sectors)}",
+                 f"SIZE     ${m.get('size_min', 0):,.0f} – ${m.get('size_max', 0):,.0f} revenue",
+                 f"MODE     " + (ui.good("simulation — hands-free demo flow")
+                                 if config.SIMULATION else
+                                 ui.warn("LIVE — external actions need approval")),
+                 ""]
+        today = state.get("outreach_days", {}).get(
+            datetime.now(timezone.utc).strftime("%Y-%m-%d"), 0)
+        lines.append(ui.dim("GUARDRAILS  ")
+                     + f"outreach {today}/{config.CAPS['max_outreach_per_day']}/day"
+                     + f"  ·  {config.CAPS['max_touches_per_lead']} touches max"
+                     + f"  ·  dd floor {config.CAPS['min_diligence_score']:.0f}")
         return lines
 
     def _desk(self, state, width):
@@ -294,13 +305,13 @@ class Terminal:
             elif key in desk:
                 info = desk[key]
                 stamp = ui.dim(info["last_run_utc"][5:16].replace("T", " ") + "  ") \
-                    + clip(info["headline"], max(10, width - 30))
+                    + clip(info["headline"], max(10, width - 34))
             else:
                 stamp = ui.dim(spec["desc"])
-            lines.append(pad(ui.accent(key.upper()), 11) + stamp)
+            lines.append(pad(ui.accent(key.upper()), 16) + stamp)
         return lines
 
-    # -------- chat view
+    # -------- chat view pieces (identical UX to v2)
 
     def _chat_lines(self, width):
         wrap = max(30, width - 8)
@@ -310,7 +321,6 @@ class Terminal:
             if role == "assistant" and is_last and self.reveal < len(text):
                 text = text[:self.reveal]
             if role == "user":
-                # submitted text: white, on a slight shark-blue field
                 for j, seg in enumerate(textwrap.wrap(text, wrap) or [""]):
                     mark = ui.accent2("> ") if j == 0 else "  "
                     if ui.color_on():
@@ -322,7 +332,7 @@ class Terminal:
                     if raw.strip().startswith("```"):
                         in_code = not in_code
                         continue
-                    if in_code:      # fenced code: a Claude-style slab
+                    if in_code:
                         line = raw[:wrap - 2]
                         if ui.color_on():
                             line = f"\033[48;5;236;38;5;252m  {line.ljust(wrap - 2)}\033[0m"
@@ -337,16 +347,14 @@ class Terminal:
         if self.thinking:
             lines.append(self._breather())
         if not lines:
-            lines = ["", ui.dim("  this is your desk — ask about the book, the tape,"),
-                     ui.dim("  the gates, or tell it to deploy an analyst."), "",
-                     ui.dim("  try: “how are we positioned?”  ·  “deploy the premarket analyst”")]
+            lines = ["", ui.dim("  this is your desk — ask about the pipeline, a deal,"),
+                     ui.dim("  the funnel, or tell it to run diligence."), "",
+                     ui.dim("  try: “what should I push today?”  ·  “run diligence on summit”")]
         return lines
 
-    # -------- the bottom: Claude Code-style chat bar (both views)
+    # -------- the chat bar + autocomplete (identical UX to v2)
 
     def suggestions(self):
-        """Closest slash-command matches for the current input — the
-        Claude Code autocomplete (contract assertion 47)."""
         if not self.input.startswith("/"):
             return []
         parts = self.input.split()
@@ -356,6 +364,12 @@ class Terminal:
             prefix = parts[1].lower() if len(parts) > 1 else ""
             return [(f"/deploy {name}", analysts.ROSTER[name]["desc"])
                     for name in analysts.ROSTER if name.startswith(prefix)]
+        if head == "/diligence" and past_first_word:
+            prefix = " ".join(parts[1:]).lower()
+            state = load_state()
+            return [(f"/diligence {d['id']}", f"{d['company']} — {d['stage']}, fit {d['score']:.0f}")
+                    for d in pipeline.active_deals(state)
+                    if prefix in d["id"] or prefix in d["company"].lower()][:6]
         if past_first_word:
             return []
         return [(c, d) for c, d in SLASH_COMMANDS.items() if c.startswith(head)]
@@ -365,7 +379,7 @@ class Terminal:
         if not matches:
             return
         cmd = matches[min(self.sugg_idx, len(matches) - 1)][0]
-        self.input = cmd + (" " if cmd == "/deploy" else "")
+        self.input = cmd + (" " if cmd in ("/deploy", "/diligence") else "")
         self.sugg_idx = 0
 
     def _chat_bar(self, width):
@@ -377,7 +391,7 @@ class Terminal:
             content = ui.accent("> ") + ui.bold(shown) + ui.cursor_block()
         else:
             content = ui.accent("> ") + ui.dim(
-                "ask your fund anything…  /  for commands") + ui.cursor_block()
+                "ask your bank anything…  /  for commands") + ui.cursor_block()
         rows.append(ui.dim("╭" + "─" * inner + "╮"))
         rows.append(ui.dim("│") + pad(" " + clip(content, inner - 2), inner) + ui.dim("│"))
         rows.append(ui.dim("╰" + "─" * inner + "╯"))
@@ -385,9 +399,9 @@ class Terminal:
         if matches:
             self.sugg_idx = min(self.sugg_idx, len(matches) - 1)
             for i, (cmd, desc) in enumerate(matches[:6]):
-                line = f"   {cmd:<18s} {desc}"
+                line = f"   {cmd:<22s} {desc}"
                 if i == self.sugg_idx and ui.color_on():
-                    line = f"\033[{ui.SHARK_BG};38;5;231m{pad(line, min(width, 78))}\033[0m"
+                    line = f"\033[{ui.SHARK_BG};38;5;231m{pad(line, min(width, 84))}\033[0m"
                 elif i == self.sugg_idx:
                     line = " ▸ " + line[3:]
                 else:
@@ -397,7 +411,7 @@ class Terminal:
         else:
             back = {"chat": "hybrid", "hybrid": "dashboard", "dash": "desk"}[self.view]
             left = f"  ⏎ send   esc {back}   /  commands   ⌃c quit"
-            right = f"{config.ACCOUNT_TYPE.upper().replace('_', ' ')} · airbank by finsider  "
+            right = f"{config.MODE.upper()} · airbank by finsider  "
             rows.append(clip(pad(ui.dim(left), width - vlen(right)) + ui.dim(right), width))
         return rows
 
@@ -406,44 +420,40 @@ class Terminal:
     def build(self, width, height):
         self.frame += 1
         state = load_state()
-        quotes = self.board.snapshot()
-        view = state.get("portfolio_view") or {}
         now = datetime.now(timezone.utc)
 
-        mkt = ui.good("US OPEN") if us_market_open(now) else ui.dim("US CLOSED")
-        account = config.ACCOUNT_TYPE.upper().replace("_", " ")
+        firm = config.MANDATE.get("firm", "Airbank")
         title = {"chat": "DESK CHAT", "hybrid": "AIRBANK TERMINAL · DESK"}.get(
             self.view, "AIRBANK TERMINAL")
-        left = f" {title}  {ui.accent('▮▮')}  {account}"
+        left = f" {title}  {ui.accent('▮▮')}  {firm.upper()}"
         if state.get("halt"):
             left += "  " + ui.bad(ui.bold("⛔ HALTED"))
-        right = f"CRYPTO 24/7 · {mkt} · {now.strftime('%a %H:%M:%S UTC')} "
+        right = f"SOURCING 24/7 · {config.MODE.upper()} · {now.strftime('%a %H:%M:%S UTC')} "
         bar = pad(left, width - vlen(right)) + right
         top = "\033[7m" + pad(clip(bar, width), width) + "\033[0m" if ui.color_on() \
             else pad(clip(bar, width), width)
-        rows = [top, self._ticker(quotes, width)]
+        rows = [top, self._ticker(width)]
 
         bottom = self._chat_bar(width)
         body_h = height - len(rows) - len(bottom)
 
         if self.view == "chat":
             chat_lines = self._chat_lines(width)
-            visible = chat_lines[-(body_h - 2):]
-            rows += panel("THE DESK — YOUR FUND, CONVERSATIONAL", visible, width, body_h)
+            rows += panel("THE DESK — YOUR BANK, CONVERSATIONAL",
+                          chat_lines[-(body_h - 2):], width, body_h)
         else:
-            lw = max(42, int(width * 0.42))
+            lw = max(46, int(width * 0.44))
             rw = width - lw - 1
-            markets_h = len(self.board.symbols) + 3
-            rows += beside(panel("MARKETS", self._markets(quotes), lw, markets_h),
-                           panel("PORTFOLIO", self._portfolio(state, view, rw), rw, markets_h),
+            flow_h = len(sources.CONNECTORS) + 4
+            rows += beside(panel("DEAL FLOW", self._flow(state), lw, flow_h),
+                           panel("PIPELINE", self._pipeline_panel(state, rw), rw, flow_h),
                            gap=1)
             desk_h = len(analysts.ROSTER) + 2
-            rows += beside(panel("STRATEGY GATES · RISK", self._gates(state), lw, desk_h),
-                           panel("ANALYST DESK", self._desk(state, rw), rw, desk_h),
+            rows += beside(panel("CAMPAIGN · GUARDRAILS", self._campaign(state), lw, desk_h),
+                           panel("DEAL TEAM", self._desk(state, rw), rw, desk_h),
                            gap=1)
             slot_h = max(4, height - len(rows) - len(bottom))
             if self.view == "hybrid":
-                # the desk chat lives where the tape was — grid stays put
                 chat_lines = self._chat_lines(width)
                 rows += panel("THE DESK", chat_lines[-(slot_h - 2):], width, slot_h)
             else:
@@ -464,22 +474,22 @@ class Terminal:
         rows = rows[:height - len(bottom)] + bottom
         return [clip(r, width) for r in rows[:height]]
 
-    # -------- key handling
+    # -------- keys (identical UX to v2)
 
     def handle(self, key):
-        if key == "\x03":                       # ctrl-c
+        if key == "\x03":
             return False
-        if key in ("UP", "DOWN"):               # autocomplete navigation
+        if key in ("UP", "DOWN"):
             matches = self.suggestions()
             if matches:
                 self.sugg_idx = (self.sugg_idx + (1 if key == "DOWN" else -1)) % min(len(matches), 6)
             return True
-        if key == "\t":                         # tab: complete to the pick
+        if key == "\t":
             self._complete()
             return True
-        if key == "\x1b":                       # esc: step back toward the dashboard
+        if key == "\x1b":
             if self.input.startswith("/"):
-                self.input = ""                 # esc first dismisses the menu
+                self.input = ""
                 return True
             self._goto({"chat": "hybrid", "hybrid": "dash", "dash": "hybrid"}[self.view])
             return True
@@ -495,11 +505,10 @@ class Terminal:
         return True
 
     def submit(self):
-        # enter with the menu open runs the highlighted command
         matches = self.suggestions()
         if matches and self.input.strip() != matches[min(self.sugg_idx, len(matches) - 1)][0]:
             self._complete()
-            if self.input.endswith(" "):        # /deploy — needs its analyst
+            if self.input.endswith(" "):
                 return True
         message = self.input.strip()
         self.input = ""
@@ -518,14 +527,17 @@ class Terminal:
             return False
         if cmd == "run":
             self.action_cycle()
-        elif cmd == "backtest":
-            self.action_backtest()
         elif cmd == "deploy":
             if len(parts) > 1 and parts[1] in analysts.ROSTER:
                 self._say("system", f"→ deploying {parts[1]} …")
                 self.action_deploy(parts[1])
             else:
                 self.status = ui.warn("deploy who? " + " ".join(analysts.ROSTER))
+        elif cmd == "diligence":
+            if len(parts) > 1:
+                self.action_diligence(" ".join(parts[1:]))
+            else:
+                self.status = ui.warn("diligence on which deal? /diligence <id or company>")
         elif cmd in ("dash", "dashboard"):
             self._goto("dash")
         elif cmd == "chat":
@@ -534,17 +546,16 @@ class Terminal:
             self._goto("hybrid")
         else:
             self.status = ui.warn(
-                f"unknown command /{cmd} — /run /deploy /backtest /dash /hybrid /chat /quit")
+                f"unknown command /{cmd} — /run /deploy /diligence /dash /hybrid /chat /quit")
         return True
 
-    # -------- lifecycle
+    # -------- lifecycle (identical to v2)
 
     def _draw(self, rows):
         sys.stdout.write("\033[H" + "\r\n".join(row + "\033[K" for row in rows))
         sys.stdout.flush()
 
     def _animate(self, width, height):
-        """Top-to-bottom reveal when flipping between pages."""
         rows = self.build(width, height)
         step = max(2, height // 14)
         for k in range(step, height + step, step):
@@ -556,7 +567,6 @@ class Terminal:
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
         sys.stdout.write("\033[?1049h\033[?25l")
-        self.board.start()
         try:
             tty.setcbreak(fd)
             alive = True
@@ -578,8 +588,6 @@ class Terminal:
                     if burst == "\x1b":
                         alive = self.handle("\x1b")
                     else:
-                        # translate arrows for autocomplete; strip any other
-                        # escape sequence so it never leaks into the input
                         burst = burst.replace("\x1b[A", "\x00UP\x00")
                         burst = burst.replace("\x1b[B", "\x00DOWN\x00")
                         burst = re.sub(r"\x1b(\[[0-9;]*[A-Za-z~])?", "", burst)
@@ -592,7 +600,6 @@ class Terminal:
                             if not alive:
                                 break
         finally:
-            self.board.stop()
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
             sys.stdout.write("\033[?25h\033[?1049l")
             sys.stdout.flush()

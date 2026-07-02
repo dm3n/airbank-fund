@@ -108,22 +108,22 @@ class ChatEngineTests(unittest.TestCase):
 
 class AnalystDeskTests(unittest.TestCase):
     def test_roster_shape(self):
-        self.assertIn("premarket", analysts.ROSTER)
+        self.assertIn("sourcing", analysts.ROSTER)
         for spec in analysts.ROSTER.values():
             self.assertTrue(spec["title"] and spec["desc"] and spec["brief"])
 
     def test_deploy_writes_report_with_injected_runner(self):
         path, headline = analysts.deploy(
-            "risk", runner=lambda prompt: "# Test Risk Memo\n\nAll clear.")
+            "screening", runner=lambda prompt: "# Test Screening Memo\n\nAll clear.")
         try:
             self.assertTrue(path.exists())
-            self.assertEqual(headline, "Test Risk Memo")
+            self.assertEqual(headline, "Test Screening Memo")
         finally:
             path.unlink(missing_ok=True)
 
     def test_deploy_refuses_empty_report(self):
         with self.assertRaises(RuntimeError):
-            analysts.deploy("risk", runner=lambda prompt: "   ")
+            analysts.deploy("screening", runner=lambda prompt: "   ")
 
 
 if __name__ == "__main__":

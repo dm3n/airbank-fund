@@ -1,37 +1,39 @@
 """Desk chat: the conversational brain of the Airbank terminal. Fast context
-(state + live quotes, no extra network), claude CLI backend, and an ACTION
-protocol so the assistant can drive the terminal (run cycles, deploy
-analysts) — execution still flows through the same risk/approval layers."""
+(pipeline state, no extra network), claude CLI backend, and an ACTION protocol
+so the assistant can drive the bank — every external action still flows
+through the approval layer."""
 import json
 import os
 import re
 import subprocess
 
-from . import config
+from . import config, pipeline
 from .state import load_state
 
 CHAT_TIMEOUT_S = 120
 ACTION_RE = re.compile(r"^ACTION:\s*(.+?)\s*$", re.MULTILINE)
 
 PROMPT = """You are the desk assistant living inside the Airbank terminal —
-Airbank by Finsider, the AI-native hedge fund (long-only, momentum +
-mean-reversion behind an LLM entry gate, hard risk caps, per-trade human
-approval on live money).
+Airbank by Finsider, the AI-native investment bank. An agent loop runs the
+whole M&A pipeline 24/7: sourcing across channels, personalized outreach,
+Finsider-grade pre-LOI diligence, LOI, post-LOI QoE, close. In live mode
+nothing external happens without a human approval.
 
-Voice: a sharp, warm trading-desk partner. Concise by default — a few
-sentences unless the user asks for depth. Ground every number in the fund
-data below; never invent prices or P&L. Plain text (no markdown headers); short lines read best in the terminal.
-Use `backticks` around tickers, commands, numbers-as-code, and ``` fences
-for multi-line code — the terminal renders them as code chips.
+Voice: a sharp, warm banking-desk partner. Concise by default. Ground every
+company, number, and stage in the pipeline data below — never invent deals
+or figures. Plain text (no markdown headers); short lines read best in the
+terminal. Use `backticks` around deal ids, tickers-of-speech like stage
+names, and commands.
 
 You can drive the terminal. If — and only if — the user asks for an action,
 end your reply with exactly one final line:
 ACTION: run
-ACTION: backtest
-ACTION: deploy <premarket|macro|crypto|equity|risk|journal>
-Live-money approvals can NOT be given here — those need `airbank approve <id>`.
+ACTION: deploy <sourcing|outreach|screening|diligence|market|pipeline-coach>
+ACTION: diligence <deal id or company>
+Approvals (outreach, LOIs) can NOT be given here — those need
+`airbank approve <id>`.
 
-=== FUND DATA (live) ===
+=== PIPELINE DATA (live) ===
 {context}
 
 === CONVERSATION SO FAR ===
@@ -41,28 +43,26 @@ User: {message}
 Assistant:"""
 
 
-def _context(quotes=None):
+def _context():
     state = load_state()
-    lines = [f"account: {config.ACCOUNT_TYPE}",
+    counts, value = pipeline.funnel(state)
+    lines = [f"mode: {config.MODE}",
+             f"mandate: {json.dumps(config.MANDATE)}",
              f"halt: {state.get('halt')} {state.get('halt_reason', '')}",
-             f"trades today: {state.get('trades_today', 0)} / {config.CAPS['max_trades_per_day']}",
-             f"caps: position ${config.CAPS['max_position_usd']:,.0f}, "
-             f"gross ${config.CAPS['max_gross_usd']:,.0f}, "
-             f"kill {config.CAPS['daily_loss_limit_pct']}%/day"]
-    view = state.get("portfolio_view")
-    if view:
-        lines.append("portfolio: " + json.dumps(view))
-    lines.append("strategy gates: " + json.dumps(state.get("strategy_gates", {})))
+             f"funnel: {json.dumps(counts)}",
+             f"active pipeline revenue: ${sum(value[s] for s in pipeline.ACTIVE_STAGES):,.0f}"]
     pending = [a for a in state.get("pending_approvals", []) if a["status"] == "pending"]
     if pending:
-        lines.append("pending approvals: " + json.dumps(pending))
-    if quotes:
-        quote_bits = [f"{s} {q['price']:,.2f} ({q['change_pct']:+.2f}%)"
-                      for s, q in quotes.items() if q.get("price")]
-        lines.append("live quotes: " + ", ".join(quote_bits))
+        lines.append("pending approvals: " + json.dumps(
+            [{"id": a["id"], "kind": a["kind"], "company": a["company"],
+              "summary": a["summary"]} for a in pending]))
+    for d in pipeline.active_deals(state)[:12]:
+        lines.append(f"deal {d['id']}: {d['company']} | {d['sector']} | {d['stage']} | "
+                     f"fit {d['score']} | rev ${d['revenue']:,.0f} | "
+                     f"dd {json.dumps(d.get('diligence', {}))[:150]}")
     desk = state.get("analyst_desk", {})
     if desk:
-        lines.append("analyst desk (latest filings): " + json.dumps(
+        lines.append("deal team latest: " + json.dumps(
             {k: v.get("headline", "") for k, v in desk.items()}))
     log_file = config.STATE_DIR / "log.md"
     if log_file.exists():
@@ -76,7 +76,7 @@ def respond(message, history, quotes=None, runner=None):
     readable reply, never an exception into the render loop."""
     convo = "\n".join(f"{'User' if role == 'user' else 'Assistant'}: {text}"
                       for role, text in history[-12:] if role in ("user", "assistant"))
-    prompt = PROMPT.format(context=_context(quotes), history=convo or "(fresh session)",
+    prompt = PROMPT.format(context=_context(), history=convo or "(fresh session)",
                            message=message)
     try:
         text = (runner or _claude)(prompt).strip()

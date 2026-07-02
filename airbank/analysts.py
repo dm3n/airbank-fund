@@ -1,121 +1,108 @@
-"""The analyst desk: pre-built research agents you deploy on demand
-(contract assertions 39–40). Each deployment gathers live fund context,
-briefs a Claude analyst, and files a timestamped markdown report to
-~/.airbank/research/. Reports are advisory — they never place orders."""
+"""The deal team: pre-built agents you deploy on demand (contract §G).
+Each deployment gathers live pipeline context, briefs a Claude analyst, and
+files a timestamped markdown report to ~/.airbank/research/. Reports are
+advisory — they never advance a deal."""
 import json
 import os
 import subprocess
 from datetime import datetime, timezone
 
-from . import config, data
+from . import config, pipeline
 from .state import load_state, log, save_state
 
 RESEARCH_DIR = config.HOME_DIR / "research"
 DEPLOY_TIMEOUT_S = 300
 
 ROSTER = {
-    "premarket": {
-        # routed to premarket.py — the full two-brain pipeline, not this PROMPT
-        "title": "Pre-Market Desk",
-        "desc": "two-brain morning watchlist: gap screen, strategy signals, news",
-        "brief": "(see premarket.py)",
+    "sourcing": {
+        "title": "Sourcing Strategist",
+        "desc": "where the next 50 leads come from, channel by channel",
+        "brief": """Review the flow board and the mandate. Which sources are
+producing, which are dry, and what specific search plays (SearchFunder
+queries, Sales Navigator filters, referral asks) would fill the top of the
+funnel this week. Be concrete — a play per channel.""",
     },
-    "macro": {
-        "title": "Macro Strategist",
-        "desc": "regime read: risk-on or risk-off, and what flips it",
-        "brief": """Assess the current market regime from the price data: trend
-alignment across crypto and equities, volatility posture, cross-asset
-divergences. State the regime (risk-on / risk-off / transition), the
-strongest evidence against your own call, and what price action would
-falsify it.""",
+    "outreach": {
+        "title": "Outreach Coach",
+        "desc": "reviews sent sequences and response rates, sharpens the copy",
+        "brief": """Read the recent outreach activity and per-source response
+rates. Diagnose what's working, critique the current sequencing cadence, and
+propose one specific improvement to the first-touch angle for this mandate.""",
     },
-    "crypto": {
-        "title": "Crypto Desk",
-        "desc": "deep dive on the BTC/ETH/SOL book and setups",
-        "brief": """Deep-dive the crypto universe: relative strength between BTC,
-ETH, SOL, where each sits vs its moving averages, and which (if any) offers
-the best asymmetry right now. Be specific about levels. If nothing is
-attractive, say so plainly — flat is a position.""",
+    "screening": {
+        "title": "Screening Analyst",
+        "desc": "ranks the live pipeline: where to spend partner time",
+        "brief": """Rank the active deals by expected value of partner time:
+fit score, stage, diligence findings, momentum. Name the top 3 to push and
+any deal that should be killed today, with the reason.""",
     },
-    "equity": {
-        "title": "Equity Desk",
-        "desc": "the megacap book: leaders, laggards, rotations",
-        "brief": """Review the equity universe: leaders vs laggards, whether index
-strength is broad or narrow, and which names the momentum strategy is most
-likely to signal next. Flag any name whose trend looks exhausted.""",
+    "diligence": {
+        "title": "Diligence Lead",
+        "desc": "second-look on the latest memos: what would kill each deal",
+        "brief": """Take the deals with diligence memos and attack them: for
+each, name the single fact most likely to kill it in confirmatory diligence
+and what document would confirm or clear it. You are paid to find problems.""",
     },
-    "risk": {
-        "title": "Risk Officer",
-        "desc": "adversarial review of the current book vs the caps",
-        "brief": """You are the risk officer and your job is to find the problem.
-Review current positions, exposure vs caps, concentration, data staleness,
-and the trade log for discipline drift. Assume something is wrong and try
-to prove it. End with: the single biggest risk in the book right now.""",
+    "market": {
+        "title": "Sector Mapper",
+        "desc": "the mandate's landscape: multiples, buyers, timing",
+        "brief": """Map the mandate's sectors from the pipeline evidence: where
+deal flow clusters, what sizes are surfacing, and how the funnel data should
+update our thesis on which sub-sector to concentrate on next month.""",
     },
-    "journal": {
-        "title": "Performance Coach",
-        "desc": "reads the trade log and critiques the process",
-        "brief": """Read the recent trade log entries. Critique the PROCESS, not
-the outcomes: were entries consistent with the stated theses, were exits
-taken when invalidated, did any veto look wrong in hindsight. Give the loop
-one concrete behavioral adjustment.""",
+    "pipeline-coach": {
+        "title": "Pipeline Coach",
+        "desc": "reads the tape and critiques the process",
+        "brief": """Read the recent tape. Critique the PROCESS: are leads dying
+for the right reasons, are stages advancing on evidence, did any approval sit
+too long. Give the loop one concrete behavioral adjustment.""",
     },
 }
 
 
 def _context():
-    """Everything an analyst gets to see, gathered fresh."""
+    """Everything a deal-team agent gets to see, gathered fresh."""
     state = load_state()
-    lines = [f"UTC now: {datetime.now(timezone.utc).isoformat()[:16]}"]
-    lines.append(f"Account: {config.ACCOUNT_TYPE}")
-    view = state.get("portfolio_view") or {}
-    if view:
-        lines.append(f"Portfolio: {json.dumps(view)}")
-    lines.append(f"Strategy gates: {json.dumps(state.get('strategy_gates', {}))}")
-    lines.append("Universe daily closes (last 30):")
-    for symbol, asset_class in ([(s, "crypto") for s in config.CRYPTO_UNIVERSE]
-                                + [(s, "equity") for s in config.EQUITY_UNIVERSE]):
-        try:
-            _, closes = data.daily_closes(symbol, asset_class, days=45)
-            lines.append(f"  {symbol}: {[round(c, 2) for c in closes[-30:]]}")
-        except Exception as exc:
-            lines.append(f"  {symbol}: unavailable ({str(exc)[:40]})")
-    headlines = data.headlines(config.CRYPTO_UNIVERSE + config.EQUITY_UNIVERSE, limit=15)
-    if headlines:
-        lines.append("Headlines: " + "; ".join(headlines))
+    counts, value = pipeline.funnel(state)
+    lines = [f"UTC now: {datetime.now(timezone.utc).isoformat()[:16]}",
+             f"Mode: {config.MODE}",
+             f"Mandate: {json.dumps(config.MANDATE)}",
+             f"Funnel counts: {json.dumps(counts)}",
+             f"Funnel value (revenue $): { {k: round(v) for k, v in value.items()} }",
+             f"Source stats: {json.dumps(state.get('source_stats', {}))[:1500]}"]
+    deals = pipeline.active_deals(state)[:15]
+    lines.append("Active deals (top 15):")
+    for d in deals:
+        lines.append(f"  {d['id']} | {d['company']} | {d['sector']} | "
+                     f"stage {d['stage']} | fit {d['score']} | "
+                     f"rev ${d['revenue']:,.0f} | dd {json.dumps(d.get('diligence', {}))[:200]}")
     log_file = config.STATE_DIR / "log.md"
     if log_file.exists():
-        lines.append("Recent trade log:\n" + "\n".join(
-            log_file.read_text().splitlines()[-40:]))
+        tail = [l for l in log_file.read_text().splitlines() if l.strip()][-40:]
+        lines.append("Recent tape:\n" + "\n".join(tail))
     return "\n".join(lines)
 
 
-PROMPT = """You are the {title} at Airbank by Finsider, an AI-native hedge fund
-run as an agent loop (long-only, momentum + mean-reversion behind an LLM entry
-gate, hard risk caps).
+PROMPT = """You are the {title} at Airbank by Finsider, the AI-native
+investment bank — an agent loop that sources, converts, and diligences
+acquisitions 24/7 under a written contract.
 
 {brief}
 
-Ground every claim in the data below — no invented numbers, no boilerplate.
-Write tight, opinionated markdown (a real PM will read this): a # title,
-short sections, and a final "## Desk view" with 2-3 actionable, falsifiable
-calls. Under 500 words.
+Ground every claim in the data below — no invented companies, no invented
+numbers. Tight, opinionated markdown (a partner will read this): a # title,
+short sections, and a final "## Desk view" with 2-3 actionable calls.
+Under 500 words.
 
-=== FUND DATA ===
+=== PIPELINE DATA ===
 {context}"""
 
 
 def deploy(name, runner=None):
-    """Run one analyst now. Returns (report_path, first_line). runner is
-    injectable for tests; defaults to the claude CLI."""
+    """Run one agent now. Returns (report_path, headline)."""
     spec = ROSTER[name]
-    if name == "premarket":
-        from . import premarket
-        report = premarket.build(runner=runner)
-    else:
-        prompt = PROMPT.format(title=spec["title"], brief=spec["brief"],
-                               context=_context())
-        report = (runner or _claude)(prompt)
+    prompt = PROMPT.format(title=spec["title"], brief=spec["brief"], context=_context())
+    report = (runner or _claude)(prompt)
     if not report or not report.strip():
         raise RuntimeError(f"{name} produced no report")
     RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
@@ -130,9 +117,6 @@ def deploy(name, runner=None):
                   "report": str(path), "headline": headline[:80]}
     save_state(state)
     log("analyst", f"{name} filed: {headline[:60]}")
-    if name == "premarket":
-        from . import premarket
-        premarket.deliver(path, report, headline)
     return path, headline
 
 

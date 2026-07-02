@@ -1,4 +1,4 @@
-"""Airbank config: env loading, universe, hard risk caps (see contract.md)."""
+"""Airbank config: env loading, the mandate, guardrails (see contract.md)."""
 import os
 from pathlib import Path
 
@@ -38,58 +38,29 @@ def load_product_config():
 
 PRODUCT = load_product_config()
 ONBOARDED = bool(PRODUCT.get("onboarded"))
-ACCOUNT = PRODUCT.get("account", {})
-# mock | alpaca_paper | alpaca_live | wallet — mock is the zero-setup default
-ACCOUNT_TYPE = ACCOUNT.get("type", "mock")
-STARTING_CASH = float(ACCOUNT.get("starting_cash", 100_000.0))
-WALLET = ACCOUNT.get("wallet", {})
 
-# env override kept for ops/testing; onboarding choice is the primary lock
-MODE = os.environ.get("AIRBANK_MODE") or (
-    "live" if ACCOUNT_TYPE == "alpaca_live" else "paper")
-LIVE = MODE == "live"
+# simulation runs the whole pipeline hands-free on demo flow;
+# live queues every external action for approval
+MODE = os.environ.get("AIRBANK_MODE") or PRODUCT.get("mode", "simulation")
+SIMULATION = MODE != "live"
+LIVE = not SIMULATION
 
-ALPACA_KEY = os.environ.get("ALPACA_API_KEY", "")
-ALPACA_SECRET = os.environ.get("ALPACA_API_SECRET", "")
-ALPACA_TRADE_URL = (
-    "https://api.alpaca.markets" if LIVE else "https://paper-api.alpaca.markets"
-)
-ALPACA_DATA_URL = "https://data.alpaca.markets"
+# the mandate: what the bank hunts for (set in onboarding)
+MANDATE = PRODUCT.get("mandate", {
+    "firm": "Airbank Capital",
+    "sectors": [],
+    "size_min": 1_000_000,
+    "size_max": 25_000_000,
+})
+
 SLACK_WEBHOOK_URL = os.environ.get("AIRBANK_SLACK_WEBHOOK", "")
 
-HAS_BROKER = bool(ALPACA_KEY and ALPACA_SECRET)
-
-CRYPTO_UNIVERSE = ["BTC/USD", "ETH/USD", "SOL/USD"]
-EQUITY_UNIVERSE = ["SPY", "QQQ", "NVDA", "AAPL", "MSFT", "META", "GOOGL"]
-
-# Hard caps — contract.md table. CRITICAL: evaluator halts on breach.
-# Mock accounts scale with chosen bankroll (assertion 31): 2% / 10%.
-# Mirror accounts replicate whole portfolios: caps = the bankroll itself
-# (long-only and unlevered by construction — cash is the constraint).
-if ACCOUNT_TYPE == "mock":
-    _pos_cap = max(100.0, STARTING_CASH * 0.02)
-    _gross_cap = max(500.0, STARTING_CASH * 0.10)
-elif ACCOUNT_TYPE == "mirror":
-    _pos_cap = STARTING_CASH
-    _gross_cap = STARTING_CASH
-else:
-    _pos_cap = 200.0 if LIVE else 2000.0
-    _gross_cap = 1000.0 if LIVE else 10000.0
-
+# Guardrails — contract.md table. CRITICAL: evaluator halts on breach.
 CAPS = {
-    "max_position_usd": _pos_cap,
-    "max_gross_usd": _gross_cap,
-    "max_trades_per_day": 10,
-    "daily_loss_limit_pct": -3.0,
-    "approval_ttl_hours": 4,
-    "stale_data_min": {"crypto": 20, "equity": 30},
+    "max_outreach_per_day": 25,
+    "max_touches_per_lead": 3,
+    "max_leads_per_cycle": 20,
+    "min_fit_score": 40.0,          # below this, a lead files as dead on arrival
+    "min_diligence_score": 55.0,    # below this, pre-LOI memo says pass
+    "approval_ttl_hours": {"outreach": 24, "loi": 72},
 }
-
-STRATEGY_PARAMS = {
-    "momentum": {"fast": 20, "slow": 60, "lookback": 20},
-    "meanrev": {"window": 20, "entry_z": -2.0, "exit_z": 0.0},
-    "vol_filter": {"window": 20, "median_window": 252, "max_ratio": 2.0},
-}
-
-BACKTEST_GATE = {"min_sharpe": 0.5}
-ANALYST_TIMEOUT_S = 120
