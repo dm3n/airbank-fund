@@ -1,6 +1,8 @@
-# Airbank by Finsider
+<h1 align="center">Airbank by Finsider</h1>
 
-**The AI-native hedge fund that lives in your terminal.** A 24/7 agent loop
+<p align="center"><b>The AI-native hedge fund that lives in your terminal.</b></p>
+
+A 24/7 agent loop
 (gather → reason → act → verify → repeat) that researches crypto and US
 equities, generates hybrid alpha (systematic signals gated by an LLM analyst),
 and executes through Alpaca with hard risk caps and per-trade human approval
