@@ -38,6 +38,23 @@ def _valid_address(chain):
     return check
 
 
+def _reset_account_state_if_changed(account):
+    """A new account is a fresh book: drop portfolio views, history, counters
+    from the previous account. Strategy gates survive (account-independent)."""
+    from .state import load_state, log, save_state
+    if config.load_product_config().get("account") == account:
+        return
+    state = load_state()
+    for key in ("mock", "wallet_view", "portfolio_view", "equity_history",
+                "pending_approvals", "positions"):
+        state.pop(key, None)
+    state["pending_approvals"] = []
+    state["trades_today"] = 0
+    state["day_start_equity"] = None
+    save_state(state)
+    log("account-switch", f"state reset for new {account['type']} account")
+
+
 def run():
     """Returns True when a config was written."""
     product = {"created_utc": datetime.now(timezone.utc).isoformat()}
@@ -131,6 +148,7 @@ def run():
     product["onboarded"] = True
     config.HOME_DIR.mkdir(parents=True, exist_ok=True)
     config.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _reset_account_state_if_changed(account)
     config.CONFIG_JSON.write_text(json.dumps(product, indent=2) + "\n")
     contract_dst = config.HOME_DIR / "contract.md"
     if not contract_dst.exists():

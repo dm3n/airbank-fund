@@ -12,7 +12,7 @@ from . import config, ui
 from .state import LOG_FILE, load_state, log, save_state
 from .ui import accent, accent2, bad, bold, dim, good, money, warn
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 ui.set_theme(config.THEME)
 
