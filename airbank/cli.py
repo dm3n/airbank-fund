@@ -12,7 +12,7 @@ from . import config, ui
 from .state import LOG_FILE, load_state, log, save_state
 from .ui import accent, accent2, bad, bold, dim, good, money, warn
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 ui.set_theme(config.THEME)
 
@@ -72,7 +72,8 @@ def portfolio_panel(state):
 
 def cmd_init(*_):
     from . import onboard
-    onboard.run()
+    if onboard.run() and sys.stdin.isatty():
+        os.execvp(sys.argv[0], [sys.argv[0]])  # seamless: straight into the terminal
 
 
 def cmd_status(*_):

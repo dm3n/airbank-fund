@@ -175,9 +175,31 @@ def run():
 
     print()
     print(ui.good(ui.bold("  ✓ fund configured")))
-    print(f"""
-  {ui.accent('airbank backtest')}   gate the strategies (run this first)
-  {ui.accent('airbank start')}      run the loop 24/7
-  {ui.accent('airbank watch')}      live dashboard
-""")
+    _autonomous_setup()
     return True
+
+
+def _autonomous_setup():
+    """Seamless finish: gate the strategies and start the 24/7 loop without
+    asking the user to learn commands. The terminal opens right after."""
+    from .state import load_state
+    if not load_state().get("strategy_gates"):
+        print(ui.dim("\n  gating strategies on a year of market data …"))
+        try:
+            from . import backtest
+            results = backtest.run(365)
+            for name, r in results.items():
+                badge = ui.good("ELIGIBLE") if r["eligible"] else ui.dim("benched")
+                print(f"    {name:<10s} sharpe {r['portfolio']['sharpe']:5.2f}  {badge}")
+        except Exception as exc:
+            print(ui.warn(f"    backtest skipped ({str(exc)[:50]}) — press B in the terminal"))
+    try:
+        from .cli import PLIST_PATH, cmd_start
+        if not PLIST_PATH.exists():
+            print(ui.dim("\n  starting the 24/7 loop …"))
+            cmd_start()
+    except Exception as exc:
+        print(ui.warn(f"  loop not started ({str(exc)[:50]}) — run `airbank start`"))
+    print(ui.dim("\n  opening your terminal …"))
+    import time
+    time.sleep(1.2)

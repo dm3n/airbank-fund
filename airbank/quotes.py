@@ -31,10 +31,14 @@ class QuoteBoard:
             if self._stop.is_set():
                 return
             try:
-                _, closes = data.daily_closes(symbol, asset_class, days=10)
+                _, closes = data.daily_closes(symbol, asset_class, days=40)
+                # baseline = prior session close, so change_pct reads as the
+                # day move; seed the spark with history so TREND shows at once
+                prev = closes[-2] if len(closes) >= 2 else closes[-1]
                 with self.lock:
-                    self.quotes[symbol] = {"prev_close": closes[-1], "price": None,
-                                           "change_pct": 0.0, "spark": []}
+                    self.quotes[symbol] = {"prev_close": prev, "price": None,
+                                           "change_pct": 0.0,
+                                           "spark": closes[-24:]}
             except Exception:
                 continue
         while not self._stop.is_set():
