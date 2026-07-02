@@ -97,8 +97,10 @@ def _read_key():
 UP, DOWN, ENTER = ("\x1b[A", "k"), ("\x1b[B", "j"), ("\r", "\n")
 
 
-def select(title, options, descriptions=None, default=0):
-    """Arrow-key menu on a TTY; numbered prompt otherwise. Returns index."""
+def select(title, options, descriptions=None, default=0, preview=None):
+    """Arrow-key menu on a TTY; numbered prompt otherwise. Returns index.
+    `preview(idx)` runs whenever the highlight moves — used for live theme
+    previews (contract assertion 41)."""
     descriptions = descriptions or [""] * len(options)
     print(bold(title))
     if not sys.stdin.isatty():
@@ -116,6 +118,8 @@ def select(title, options, descriptions=None, default=0):
     while True:
         if rendered:
             sys.stdout.write(f"\033[{rendered}A")
+        if preview:
+            preview(idx)  # cursor is at the menu's first line here
         rendered = 0
         for i, (opt, desc) in enumerate(zip(options, descriptions)):
             marker = accent(bold("  ▸ ")) if i == idx else "    "
@@ -141,13 +145,15 @@ def select(title, options, descriptions=None, default=0):
             return int(key) - 1
 
 
-def text(prompt, default=None, secret=False, validate=None):
-    """Prompt for a value; re-ask until validate(value) passes (if given)."""
+def text(prompt, default=None, secret=False, validate=None, prefix=""):
+    """Prompt for a value; re-ask until validate(value) passes (if given).
+    `prefix` sits right after the colon so the user types after it, e.g.
+    `Starting cash: $` (contract assertion 41)."""
     import getpass
-    suffix = dim(f" [{default}]") if default is not None else ""
+    suffix = dim(f" [{prefix}{default}]") if default is not None else ""
     while True:
         reader = getpass.getpass if secret else input
-        raw = reader(f"{prompt}{suffix}: ").strip()
+        raw = reader(f"{prompt}{suffix}: {accent(prefix)}").strip()
         value = raw or ("" if default is None else str(default))
         if validate is None:
             return value

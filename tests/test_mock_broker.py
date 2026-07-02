@@ -1,5 +1,7 @@
 import unittest
 
+import _isolate  # noqa: F401  (must precede airbank imports)
+
 from airbank.brokers import ExecutionRefused, MockBroker, WalletBroker
 
 

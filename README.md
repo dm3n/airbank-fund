@@ -27,15 +27,34 @@ pipx install git+https://github.com/dm3n/airbank-fund
 
 ## Sixty seconds to a running fund
 
-The first command you run opens the onboarding wizard — pick an account,
-pick a style, done:
+Type `airbank`. The first run opens the onboarding wizard — pick an account,
+pick a style (themes live-preview as you scroll) — and every run after that
+drops you straight into **the terminal**: a full-screen, Bloomberg-style live
+fund view with streaming quotes, your portfolio and P&L, strategy gates, the
+analyst desk, and the loop's thinking on the tape.
 
 ```bash
-airbank init      # step-through setup: account type, starting cash, theme
+airbank           # the terminal — [r]un cycle · [d]eploy analyst · [b]acktest · [t]heme · [q]uit
 airbank backtest  # strategies must earn a Sharpe > 0.5 to trade
 airbank start     # the loop runs 24/7, one cycle every 15 min
-airbank watch     # live dashboard: portfolio, P&L, the loop thinking
 ```
+
+## The analyst desk
+
+Deploy a research agent whenever you want a second brain on the book. Each
+one gathers the fund's live context (prices, positions, gates, trade log),
+briefs Claude, and files a timestamped markdown report to
+`~/.airbank/research/`:
+
+```bash
+airbank analysts          # the roster
+airbank deploy premarket  # morning briefing: overnight moves, today's setup
+airbank deploy risk       # adversarial review of the current book
+airbank research          # read the latest report
+```
+
+Roster: `premarket` · `macro` · `crypto` · `equity` · `risk` · `journal`.
+Reports are advisory only — the desk has no code path to an order.
 
 Four account types:
 

@@ -1,5 +1,7 @@
 import unittest
 
+import _isolate  # noqa: F401  (must precede airbank imports)
+
 from airbank import signals
 from airbank.analyst import _parse
 

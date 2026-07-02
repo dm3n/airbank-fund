@@ -1,4 +1,4 @@
-# Airbank by Finsider — Loop Contract v1.1
+# Airbank by Finsider — Loop Contract v2
 
 The world's first AI-native hedge fund. This contract is what gets graded. The
 Evaluator halts the loop on any CRITICAL breach; the build is judged only
@@ -121,6 +121,23 @@ Daniel's explicit per-trade approval. Paper mode may auto-execute.
 35. `status` and `watch` render portfolio (cash, equity, positions, day and
     total P&L) from state alone — no network. The loop refreshes the
     portfolio view and an equity-history ring buffer (≤96 points) each cycle.
+
+### I. The terminal & the analyst desk (v2)
+36. Bare `airbank` on a TTY opens the full-screen live terminal (after
+    onboarding); piped/non-TTY callers get help instead of a hung screen.
+37. The terminal can trigger cycles, backtests, and analyst deployments, but
+    live-money approvals remain explicit CLI commands — never a single
+    accidental keypress.
+38. Quotes stream on a background thread; the terminal's key handling and
+    redraw never block on the network. Only the main thread draws.
+39. Analyst desk: a pre-built roster (premarket, macro, crypto, equity, risk,
+    journal) deployable via `airbank deploy <name>` or the terminal. Every
+    deployment gathers fresh fund context, files a timestamped markdown
+    report in ~/.airbank/research/, and records status in state.
+40. Analyst reports are advisory only — the desk has no code path to an
+    order. Only the loop trades.
+41. Onboarding: the cash prompt carries a `$` at the input point, and theme
+    selection live-previews the highlighted theme before it is chosen.
 
 ## Rubric calibration (rule 6)
 

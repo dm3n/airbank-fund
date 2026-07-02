@@ -2,6 +2,7 @@
 28–30). Persists choices to ~/.airbank/config.json; secrets to config.env."""
 import json
 import shutil
+import sys
 from datetime import datetime, timezone
 
 from . import config, ui
@@ -89,7 +90,8 @@ def run():
     print()
 
     if kinds[idx] == "mock":
-        cash = ui.text("  Starting cash", default="100000", validate=_valid_cash)
+        cash = ui.text("  Starting cash", default="100,000",
+                       validate=_valid_cash, prefix="$")
         account["starting_cash"] = float(cash.replace(",", "").replace("$", ""))
         pos = max(100.0, account["starting_cash"] * 0.02)
         gross = max(500.0, account["starting_cash"] * 0.10)
@@ -114,18 +116,29 @@ def run():
         account["wallet"] = {"chain": chain, "address": address}
     product["account"] = account
 
-    # ---- step 3: theme
+    # ---- step 3: theme (live preview: the sample strip re-colors as you move)
     _header(3, "Pick your style")
     print()
     names = list(ui.THEMES)
-    previews = []
-    for name in names:
-        saved = ui._theme_name
-        ui.set_theme(name)
-        previews.append(f"{ui.accent('▮▮')} {ui.good('+2.4%')} {ui.bad('-0.8%')} "
-                        f"{ui.accent2('BTC/USD')}")
-        ui.set_theme(saved)
-    theme_idx = ui.select("Theme", [ui.THEMES[n]["label"] for n in names], previews)
+
+    def _sample():
+        return (f"  {ui.accent('▮▮ AIRBANK')}  {ui.accent2('BTC/USD 60,736')}  "
+                f"{ui.good('+2.4%')}  {ui.bad('-0.8%')}  "
+                f"{ui.accent(ui.SPARK * 2)}  {ui.dim('the fund, in this theme')}")
+
+    def _preview(i):
+        # cursor sits on the menu's first line; the sample strip is 3 rows up
+        ui.set_theme(names[i])
+        sys.stdout.write("\0337\033[3A\r\033[2K" + _sample() + "\0338")
+        sys.stdout.flush()
+
+    if sys.stdin.isatty():
+        print(_sample())
+        print()
+        theme_idx = ui.select("Theme", [ui.THEMES[n]["label"] for n in names],
+                              preview=_preview)
+    else:
+        theme_idx = ui.select("Theme", [ui.THEMES[n]["label"] for n in names])
     product["theme"] = names[theme_idx]
     ui.set_theme(names[theme_idx])
 

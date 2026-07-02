@@ -12,7 +12,7 @@ from . import config, ui
 from .state import LOG_FILE, load_state, log, save_state
 from .ui import accent, accent2, bad, bold, dim, good, money, warn
 
-__version__ = "1.1.2"
+__version__ = "2.0.0"
 
 ui.set_theme(config.THEME)
 
@@ -289,6 +289,58 @@ def cmd_theme(name=None, *_):
     print(good(f"theme set: {name}") + "  " + accent("▮▮") + accent2(" ▮▮"))
 
 
+def cmd_dash(*_):
+    from . import dashboard
+    dashboard.run()
+
+
+def cmd_analysts(*_):
+    from . import analysts
+    banner()
+    print(bold("The analyst desk") + dim("  — deploy one: airbank deploy <name>"))
+    print()
+    state = load_state()
+    desk = state.get("analyst_desk", {})
+    for name, spec in analysts.ROSTER.items():
+        last = desk.get(name)
+        stamp = dim(f"last: {last['last_run_utc'][:16].replace('T', ' ')}") if last \
+            else dim("never deployed")
+        print(f"  {accent(name):<18s} {bold(spec['title']):<32s} {stamp}")
+        print(f"           {dim(spec['desc'])}")
+        if last:
+            print(f"           {dim('→ ' + last['headline'])}")
+        print()
+
+
+def cmd_deploy(name=None, *_):
+    from . import analysts
+    if name not in analysts.ROSTER:
+        print(f"usage: airbank deploy <{'|'.join(analysts.ROSTER)}>")
+        sys.exit(1)
+    spec = analysts.ROSTER[name]
+    print(dim(f"deploying {spec['title']} — gathering fund data, briefing the desk …"))
+    path, headline = analysts.deploy(name)
+    print(good(f"report filed: {headline}"))
+    print(dim(f"  {path}"))
+    print(dim("  read it: airbank research"))
+
+
+def cmd_research(index="1", *_):
+    from . import analysts
+    files = analysts.reports()
+    if not files:
+        print(dim("no research yet — deploy an analyst: airbank deploy premarket"))
+        return
+    if index == "list":
+        for i, f in enumerate(files[:15], 1):
+            print(f"  {accent(str(i)):>4s}  {f.name}")
+        return
+    n = int(index) if str(index).isdigit() else 1
+    target = files[min(n, len(files)) - 1]
+    print(dim(f"— {target.name} —\n"))
+    print(target.read_text())
+
+
 def cmd_contract(*_):
     print((config.PKG_DIR / "contract.md").read_text())
 
@@ -300,6 +352,8 @@ def cmd_version(*_):
 def help_text():
     return f"""{accent(ui.BANNER)}
 {bold('  Airbank by Finsider')} — the AI-native hedge fund in your terminal
+
+    {accent(bold('airbank'))}                   open the terminal (live Bloomberg-style fund view)
 
   {bold('setup')}
     airbank init              onboarding wizard (account, style — mock money welcome)
@@ -313,9 +367,14 @@ def help_text():
     airbank start [seconds]   run 24/7 via launchd (default: every 900s)
     airbank stop              stop the 24/7 loop
 
+  {bold('analyst desk')}
+    airbank analysts          the roster: premarket, macro, crypto, equity, risk, journal
+    airbank deploy <name>     deploy an analyst now — files a markdown report
+    airbank research [n|list] read the latest (or nth) research report
+
   {bold('operate')}
-    airbank watch             live dashboard: portfolio, P&L, the loop thinking
     airbank status            fund state, gates, pending approvals
+    airbank watch             simple auto-refreshing status (the terminal is better)
     airbank approve <id>      approve a pending live trade
     airbank reject <id>       reject a pending live trade
     airbank halt [reason]     kill switch
@@ -330,6 +389,8 @@ COMMANDS = {
     "backtest": cmd_backtest, "watch": cmd_watch, "halt": cmd_halt,
     "resume": cmd_resume, "start": cmd_start, "stop": cmd_stop,
     "doctor": cmd_doctor, "contract": cmd_contract, "theme": cmd_theme,
+    "dash": cmd_dash, "terminal": cmd_dash, "analysts": cmd_analysts,
+    "deploy": cmd_deploy, "research": cmd_research,
     "version": cmd_version, "--version": cmd_version,
     "approve": lambda *a: cmd_decide("approved", *a),
     "reject": lambda *a: cmd_decide("rejected", *a),
@@ -341,9 +402,12 @@ NO_ONBOARD = {"init", "help", "-h", "--help", "version", "--version",
 
 def main():
     args = sys.argv[1:]
-    if not args or args[0] in ("help", "-h", "--help") or args[0] not in COMMANDS:
+    if not args:
+        # bare `airbank` = the terminal (assertion 36); help when piped
+        args = ["dash"] if sys.stdin.isatty() else ["help"]
+    if args[0] in ("help", "-h", "--help") or args[0] not in COMMANDS:
         print(help_text())
-        sys.exit(0 if not args or args[0] in ("help", "-h", "--help") else 1)
+        sys.exit(0 if args[0] in ("help", "-h", "--help") else 1)
     # first run: launch onboarding before any operating command (assertion 28);
     # never block a non-interactive caller (launchd) — fall back to defaults.
     if not config.ONBOARDED and args[0] not in NO_ONBOARD and sys.stdin.isatty():
