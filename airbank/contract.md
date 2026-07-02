@@ -1,4 +1,4 @@
-# Airbank by Finsider — Loop Contract v1
+# Airbank by Finsider — Loop Contract v1.1
 
 The world's first AI-native hedge fund. This contract is what gets graded. The
 Evaluator halts the loop on any CRITICAL breach; the build is judged only
@@ -63,9 +63,11 @@ Daniel's explicit per-trade approval. Paper mode may auto-execute.
     proposals are eligible for execution; ineligible strategies log only.
 
 ### C. LLM analyst gate (Generator, narrative)
-13. Every execution-eligible proposal passes through the analyst
-    (`claude -p`) and gets a JSON verdict: proceed|veto, conviction ∈ [0,1], thesis.
-14. Analyst failure (timeout, bad JSON) → proposal is dropped, never executed.
+13. Every execution-eligible ENTRY passes through the analyst (`claude -p`)
+    and gets a JSON verdict: proceed|veto, conviction ∈ [0,1], thesis.
+    EXITS are risk-reducing and never wait on the analyst — a long-only fund
+    must always be able to get flat.
+14. Analyst failure (timeout, bad JSON) → entry is dropped, never executed.
 15. Final size = base size × conviction, then re-checked against caps.
 16. The analyst verdict and thesis are persisted in the log entry.
 
@@ -97,6 +99,28 @@ Daniel's explicit per-trade approval. Paper mode may auto-execute.
     `ops/install-launchd.sh` step.
 27. Secrets only from `~/.config/finsider-stack/stack.env`; never printed,
     never committed. `.gitignore` covers `state/` and any `.env`.
+
+### H. Product: onboarding, accounts, themes (v1.1)
+28. First run of any operating command without a saved config launches the
+    interactive onboarding wizard; the wizard also runs via `airbank init`.
+29. Onboarding is a step-through terminal UX (arrow keys on a TTY, numbered
+    fallback when piped) and persists every choice to `~/.airbank/config.json`;
+    secrets go only to `~/.airbank/config.env` (0600).
+30. Account types: `mock` (simulated portfolio, user-chosen starting cash),
+    `alpaca_paper`, `alpaca_live`, `wallet` (watch-only crypto address).
+31. The mock engine fills orders at real market prices, tracks cash /
+    positions / realized P&L inside `state.json` (still 3 state files), and
+    obeys the same risk layer as real accounts. Mock caps scale with starting
+    cash: 2% per position, 10% gross (floors: $100 / $500).
+32. A watch-only wallet account can never submit an order — `can_execute`
+    is false at the broker layer, independent of upstream checks.
+33. `alpaca_live` remains triple-locked: chosen in onboarding, `live_ack`
+    in state, per-trade approval.
+34. Themes are user-selectable in onboarding (and via config.json), applied
+    across every command; a no-color theme exists and `NO_COLOR` is honored.
+35. `status` and `watch` render portfolio (cash, equity, positions, day and
+    total P&L) from state alone — no network. The loop refreshes the
+    portfolio view and an equity-history ring buffer (≤96 points) each cycle.
 
 ## Rubric calibration (rule 6)
 

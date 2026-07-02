@@ -21,6 +21,14 @@ class SignalTests(unittest.TestCase):
     def test_momentum_flat_in_downtrend(self):
         self.assertIsNone(signals.momentum_signal(trending_down()))
 
+    def test_momentum_no_rebuy_while_holding(self):
+        self.assertIsNone(signals.momentum_signal(trending_up(), holding=True))
+
+    def test_momentum_exit_when_trend_breaks(self):
+        sig = signals.momentum_signal(trending_down(), holding=True)
+        self.assertIsNotNone(sig)
+        self.assertEqual(sig["side"], "sell")
+
     def test_momentum_needs_history(self):
         self.assertIsNone(signals.momentum_signal(trending_up(30)))
 

@@ -23,7 +23,31 @@ def _load_env_file(path):
 _load_env_file(CONFIG_ENV)
 _load_env_file(STACK_ENV)
 
-MODE = os.environ.get("AIRBANK_MODE", "paper")  # paper | live
+CONFIG_JSON = HOME_DIR / "config.json"
+
+
+def load_product_config():
+    if not CONFIG_JSON.exists():
+        return {}
+    import json
+    try:
+        return json.loads(CONFIG_JSON.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+PRODUCT = load_product_config()
+ONBOARDED = bool(PRODUCT.get("onboarded"))
+ACCOUNT = PRODUCT.get("account", {})
+# mock | alpaca_paper | alpaca_live | wallet — mock is the zero-setup default
+ACCOUNT_TYPE = ACCOUNT.get("type", "mock")
+STARTING_CASH = float(ACCOUNT.get("starting_cash", 100_000.0))
+WALLET = ACCOUNT.get("wallet", {})
+THEME = PRODUCT.get("theme", "midnight")
+
+# env override kept for ops/testing; onboarding choice is the primary lock
+MODE = os.environ.get("AIRBANK_MODE") or (
+    "live" if ACCOUNT_TYPE == "alpaca_live" else "paper")
 LIVE = MODE == "live"
 
 ALPACA_KEY = os.environ.get("ALPACA_API_KEY", "")
@@ -40,9 +64,17 @@ CRYPTO_UNIVERSE = ["BTC/USD", "ETH/USD", "SOL/USD"]
 EQUITY_UNIVERSE = ["SPY", "QQQ", "NVDA", "AAPL", "MSFT", "META", "GOOGL"]
 
 # Hard caps — contract.md table. CRITICAL: evaluator halts on breach.
+# Mock accounts scale with chosen bankroll (assertion 31): 2% / 10%.
+if ACCOUNT_TYPE == "mock":
+    _pos_cap = max(100.0, STARTING_CASH * 0.02)
+    _gross_cap = max(500.0, STARTING_CASH * 0.10)
+else:
+    _pos_cap = 200.0 if LIVE else 2000.0
+    _gross_cap = 1000.0 if LIVE else 10000.0
+
 CAPS = {
-    "max_position_usd": 200.0 if LIVE else 2000.0,
-    "max_gross_usd": 1000.0 if LIVE else 10000.0,
+    "max_position_usd": _pos_cap,
+    "max_gross_usd": _gross_cap,
     "max_trades_per_day": 10,
     "daily_loss_limit_pct": -3.0,
     "approval_ttl_hours": 4,

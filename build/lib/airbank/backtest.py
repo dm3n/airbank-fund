@@ -13,12 +13,11 @@ def _strategy_positions(closes, strategy):
     for i in range(len(closes)):
         window = closes[: i + 1]
         if strategy == "momentum":
-            sig = signals.momentum_signal(window)
-            pos = 1 if sig else 0
-        else:  # meanrev
+            sig = signals.momentum_signal(window, holding=pos == 1)
+        else:
             sig = signals.meanrev_signal(window, holding=pos == 1)
-            if sig:
-                pos = 1 if sig["side"] == "buy" else 0
+        if sig:
+            pos = 1 if sig["side"] == "buy" else 0
         out.append(pos)
     return out
 

@@ -46,16 +46,21 @@ def vol_filter_ok(closes):
     return current <= p["max_ratio"] * statistics.median(history)
 
 
-def momentum_signal(closes):
-    """Long when fast MA > slow MA and lookback return > 0 — assertion 8."""
+def momentum_signal(closes, holding=False):
+    """Entry when fast MA > slow MA and lookback return > 0 (assertion 8);
+    exit when the trend condition breaks. Never re-buys while holding."""
     p = STRATEGY_PARAMS["momentum"]
     fast, slow = sma(closes, p["fast"]), sma(closes, p["slow"])
     if fast is None or slow is None or len(closes) <= p["lookback"]:
         return None
     lookback_ret = closes[-1] / closes[-1 - p["lookback"]] - 1
-    if fast > slow and lookback_ret > 0:
+    trending = fast > slow and lookback_ret > 0
+    if not holding and trending:
         return {"strategy": "momentum", "side": "buy",
-                "why": f"fast_ma>{'slow_ma'}, {p['lookback']}d ret {lookback_ret:+.2%}"}
+                "why": f"fast_ma>slow_ma, {p['lookback']}d ret {lookback_ret:+.2%}"}
+    if holding and not trending:
+        return {"strategy": "momentum", "side": "sell",
+                "why": f"trend broke: {p['lookback']}d ret {lookback_ret:+.2%}"}
     return None
 
 
@@ -76,7 +81,7 @@ def generate_candidates(symbol, asset_class, closes, holding=False):
     """All raw candidates for one symbol. Entries respect the vol filter."""
     candidates = []
     entries_allowed = vol_filter_ok(closes)
-    for sig in (momentum_signal(closes), meanrev_signal(closes, holding)):
+    for sig in (momentum_signal(closes, holding), meanrev_signal(closes, holding)):
         if sig is None:
             continue
         if sig["side"] == "buy" and not entries_allowed:
