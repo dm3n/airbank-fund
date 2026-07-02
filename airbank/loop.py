@@ -66,6 +66,14 @@ def _gather_reason_act(state, cycle, broker):
         log("cycle-skip", f"halted: {state.get('halt_reason', '')}")
         return
 
+    # mirror accounts: replicate the source portfolio, then stop — the
+    # signals engine stays research-only on a mirrored book (section J)
+    if isinstance(broker, brokers.MirrorBroker):
+        trades = broker.sync(cycle)
+        if trades:
+            log("mirror-sync", f"{trades} rebalance trade(s) — {cycle.get('mirror_source', '')}")
+        return
+
     # ---- act on previously approved live trades first
     for approval in approvals.approved_ready(state):
         _execute(state, cycle, broker, approval["order"], approval)

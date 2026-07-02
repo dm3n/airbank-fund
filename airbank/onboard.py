@@ -78,14 +78,16 @@ def run():
     # ---- step 2: account
     _header(2, "Choose your account")
     print()
-    kinds = ["mock", "alpaca_paper", "alpaca_live", "wallet"]
+    kinds = ["mock", "alpaca_paper", "alpaca_live", "wallet", "mirror"]
     idx = ui.select(
         "How should the fund trade?",
-        ["Mock portfolio", "Alpaca paper", "Alpaca live", "Watch-only crypto wallet"],
+        ["Mock portfolio", "Alpaca paper", "Alpaca live",
+         "Watch-only crypto wallet", "Mirror another account"],
         ["simulated cash, real market prices — zero setup, the default",
          "Alpaca's free paper-trading account (needs API keys)",
          "real money — triple-locked, every trade needs your approval",
-         "track a public BTC/ETH address; the fund researches but never trades"])
+         "track a public BTC/ETH address; the fund researches but never trades",
+         "replicate any wallet, brokerage, or portfolio here — and manage it"])
     account = {"type": kinds[idx]}
     print()
 
@@ -108,12 +110,41 @@ def run():
             secrets += [f"ALPACA_API_KEY={key}", f"ALPACA_API_SECRET={secret}"]
         else:
             print(ui.warn("  no key entered — the fund will run in research mode"))
-    else:  # wallet
+    elif kinds[idx] == "wallet":
         chain_idx = ui.select("Which chain?", ["Bitcoin", "Ethereum"],
                               ["public address, e.g. bc1q…", "public address, 0x…"])
         chain = ["btc", "eth"][chain_idx]
         address = ui.text(f"  {chain.upper()} address", validate=_valid_address(chain))
         account["wallet"] = {"chain": chain, "address": address}
+    else:  # mirror
+        src_idx = ui.select(
+            "What should Airbank mirror?",
+            ["Crypto wallet", "Alpaca account", "Holdings file"],
+            ["a public BTC/ETH address — its balance becomes your book",
+             "your connected Alpaca positions, replicated here",
+             "any portfolio: drop holdings into ~/.airbank/mirror.json"])
+        if src_idx == 0:
+            chain_idx = ui.select("Which chain?", ["Bitcoin", "Ethereum"],
+                                  ["public address, e.g. bc1q…", "public address, 0x…"])
+            chain = ["btc", "eth"][chain_idx]
+            address = ui.text(f"  {chain.upper()} address", validate=_valid_address(chain))
+            account["mirror"] = {"source": "wallet", "chain": chain, "address": address}
+        elif src_idx == 1:
+            key = ui.text("  Alpaca API key")
+            secret = ui.text("  Alpaca API secret", secret=True) if key else ""
+            if key:
+                secrets += [f"ALPACA_API_KEY={key}", f"ALPACA_API_SECRET={secret}"]
+            account["mirror"] = {"source": "alpaca"}
+        else:
+            from . import mirror as mirror_mod
+            path = mirror_mod.write_template()
+            print(ui.dim(f"  edit your holdings anytime: {path}"))
+            account["mirror"] = {"source": "file"}
+        cash = ui.text("  Bankroll to mirror with", default="100,000",
+                       validate=_valid_cash, prefix="$")
+        account["starting_cash"] = float(cash.replace(",", "").replace("$", ""))
+        print(ui.dim("  the fund rebalances to the source every cycle — "
+                     "long-only, unlevered, inside this bankroll"))
     product["account"] = account
 
     # ---- step 3: theme (live preview: the sample strip re-colors as you move)
@@ -148,7 +179,9 @@ def run():
     label = {"mock": f"Mock portfolio · {ui.money(account.get('starting_cash', 0))} starting cash",
              "alpaca_paper": "Alpaca paper trading",
              "alpaca_live": "Alpaca LIVE (approval-gated)",
-             "wallet": f"Watch-only {account.get('wallet', {}).get('chain', '?').upper()} wallet"}
+             "wallet": f"Watch-only {account.get('wallet', {}).get('chain', '?').upper()} wallet",
+             "mirror": f"Mirror · {account.get('mirror', {}).get('source', '?')} · "
+                       f"{ui.money(account.get('starting_cash', 0))} bankroll"}
     print(f"  account   {ui.bold(label[account['type']])}")
     print(f"  theme     {ui.bold(product['theme'])}")
     print(f"  config    {ui.dim(str(config.CONFIG_JSON))}")

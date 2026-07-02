@@ -20,7 +20,9 @@ from .quotes import QuoteBoard
 from .state import LOG_FILE, load_state
 
 ANSI_RE = re.compile(r"\033\[[0-9;]*m")
-SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+BREATH = "·✢✳✶✻✽✻✶✳✢"          # the desk, breathing — like Claude does
+THINK_VERBS = ["thinking", "reading the tape", "checking the book",
+               "weighing it", "running the numbers"]
 
 
 def vlen(s):
@@ -82,15 +84,30 @@ class Terminal:
     def __init__(self):
         self.board = QuoteBoard()
         self.status = ui.dim("your fund is live — say something to the desk below")
-        self.view = "dash"            # dash | chat
+        self.view = "dash"            # dash | hybrid | chat
         self.input = ""
         self.transcript = []          # (role, text): user | assistant | system
         self.thinking = False
+        self.think_started = 0.0
         self.reveal = 0               # typewriter progress on last assistant msg
         self.busy = ""
         self.frame = 0
         self.switch_anim = False
         self.quit = False
+
+    def _breather(self):
+        """The subtle working indicator: a breathing glyph, a rotating verb,
+        the elapsed seconds."""
+        glyph = BREATH[self.frame % len(BREATH)]
+        verb = THINK_VERBS[int(time.time() - self.think_started) // 4 % len(THINK_VERBS)]
+        elapsed = int(time.time() - self.think_started)
+        core = f"{glyph} {verb}… ({elapsed}s)"
+        return ui.accent(core) if self.frame % 6 < 3 else ui.dim(core)
+
+    def _goto(self, view):
+        if view != self.view:
+            self.view = view
+            self.switch_anim = True
 
     # -------- background actions (threads set state; never draw)
 
@@ -157,10 +174,10 @@ class Terminal:
 
     def ask(self, message):
         self._say("user", message)
-        if self.view != "chat":
-            self.view = "chat"
-            self.switch_anim = True
+        if self.view == "dash":       # chat lands where the tape was
+            self._goto("hybrid")
         self.thinking = True
+        self.think_started = time.time()
 
         def go():
             try:
@@ -304,8 +321,7 @@ class Terminal:
                 lines.append(ui.dim("  → " + text))
             lines.append("")
         if self.thinking:
-            lines.append(ui.accent(SPINNER[self.frame % len(SPINNER)] + " ")
-                         + ui.dim("the desk is thinking …"))
+            lines.append(self._breather())
         if not lines:
             lines = ["", ui.dim("  this is your desk — ask about the book, the tape,"),
                      ui.dim("  the gates, or tell it to deploy an analyst."), "",
@@ -316,7 +332,8 @@ class Terminal:
 
     def _chat_bar(self, width):
         inner = width - 2
-        rows = [clip(" " + self.status, width)]
+        status = self._breather() if self.thinking else self.status
+        rows = [clip(" " + status, width)]
         if self.input:
             shown = self.input[-(inner - 5):]
             content = ui.accent("> ") + ui.bold(shown) + ui.accent("▌")
@@ -325,8 +342,8 @@ class Terminal:
         rows.append(ui.dim("╭" + "─" * inner + "╮"))
         rows.append(ui.dim("│") + pad(" " + clip(content, inner - 2), inner) + ui.dim("│"))
         rows.append(ui.dim("╰" + "─" * inner + "╯"))
-        other = "dashboard" if self.view == "chat" else "chat"
-        left = f"  ⏎ send   esc {other}   ⌃c quit"
+        back = {"chat": "hybrid", "hybrid": "dashboard", "dash": "desk"}[self.view]
+        left = f"  ⏎ send   esc {back}   /dash /hybrid /chat   ⌃c quit"
         right = f"{config.ACCOUNT_TYPE.upper().replace('_', ' ')} · airbank by finsider  "
         rows.append(clip(pad(ui.dim(left), width - vlen(right)) + ui.dim(right), width))
         return rows
@@ -342,7 +359,8 @@ class Terminal:
 
         mkt = ui.good("US OPEN") if us_market_open(now) else ui.dim("US CLOSED")
         account = config.ACCOUNT_TYPE.upper().replace("_", " ")
-        title = "DESK CHAT" if self.view == "chat" else "AIRBANK TERMINAL"
+        title = {"chat": "DESK CHAT", "hybrid": "AIRBANK TERMINAL · DESK"}.get(
+            self.view, "AIRBANK TERMINAL")
         left = f" {title}  {ui.accent('▮▮')}  {account}"
         if state.get("halt"):
             left += "  " + ui.bad(ui.bold("⛔ HALTED"))
@@ -370,17 +388,23 @@ class Terminal:
             rows += beside(panel("STRATEGY GATES · RISK", self._gates(state), lw, desk_h),
                            panel("ANALYST DESK", self._desk(state, rw), rw, desk_h),
                            gap=1)
-            tape_h = max(4, height - len(rows) - len(bottom))
-            tape_lines = []
-            if LOG_FILE.exists():
-                recent = [l for l in LOG_FILE.read_text().strip().splitlines() if l.strip()]
-                for line in recent[-(tape_h - 2):]:
-                    if line.startswith("## "):
-                        line = ui.accent(line[3:])
-                    tape_lines.append(line)
+            slot_h = max(4, height - len(rows) - len(bottom))
+            if self.view == "hybrid":
+                # the desk chat lives where the tape was — grid stays put
+                chat_lines = self._chat_lines(width)
+                rows += panel("THE DESK", chat_lines[-(slot_h - 2):], width, slot_h)
             else:
-                tape_lines.append(ui.dim("the loop hasn't spoken yet"))
-            rows += panel("TAPE — THE LOOP, THINKING", tape_lines, width, tape_h)
+                tape_lines = []
+                if LOG_FILE.exists():
+                    recent = [l for l in LOG_FILE.read_text().strip().splitlines()
+                              if l.strip()]
+                    for line in recent[-(slot_h - 2):]:
+                        if line.startswith("## "):
+                            line = ui.accent(line[3:])
+                        tape_lines.append(line)
+                else:
+                    tape_lines.append(ui.dim("the loop hasn't spoken yet"))
+                rows += panel("TAPE — THE LOOP, THINKING", tape_lines, width, slot_h)
 
         while len(rows) < height - len(bottom):
             rows.append("")
@@ -392,9 +416,8 @@ class Terminal:
     def handle(self, key):
         if key == "\x03":                       # ctrl-c
             return False
-        if key == "\x1b":                       # esc: flip views
-            self.view = "chat" if self.view == "dash" else "dash"
-            self.switch_anim = True
+        if key == "\x1b":                       # esc: step back toward the dashboard
+            self._goto({"chat": "hybrid", "hybrid": "dash", "dash": "hybrid"}[self.view])
             return True
         if key in ("\r", "\n"):
             return self.submit()
@@ -433,15 +456,14 @@ class Terminal:
         elif cmd == "theme":
             self.action_theme(parts[1] if len(parts) > 1 else None)
         elif cmd in ("dash", "dashboard"):
-            if self.view != "dash":
-                self.view = "dash"
-                self.switch_anim = True
+            self._goto("dash")
         elif cmd == "chat":
-            if self.view != "chat":
-                self.view = "chat"
-                self.switch_anim = True
+            self._goto("chat")
+        elif cmd == "hybrid":
+            self._goto("hybrid")
         else:
-            self.status = ui.warn(f"unknown command /{cmd} — /run /deploy /backtest /theme /quit")
+            self.status = ui.warn(
+                f"unknown command /{cmd} — /run /deploy /backtest /theme /dash /hybrid /chat /quit")
         return True
 
     # -------- lifecycle

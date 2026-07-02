@@ -28,6 +28,7 @@ ACCOUNT_LABEL = {
     "alpaca_paper": "Alpaca paper",
     "alpaca_live": "Alpaca LIVE",
     "wallet": "watch-only wallet",
+    "mirror": "mirror account",
 }
 
 

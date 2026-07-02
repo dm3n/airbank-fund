@@ -61,13 +61,19 @@ class MockBroker:
             pos["last_price"] = price
             positions[symbol] = pos
             self.book["cash"] -= notional
-        else:  # long-only v1: sell closes the whole position
-            pos = positions.pop(symbol, None)
+        else:  # long-only: sell closes the position, or part of it when
+               # `qty` is given (mirror rebalances trim, they don't dump)
+            pos = positions.get(symbol)
             if pos is None:
                 raise ExecutionRefused(f"no mock position in {symbol}")
-            proceeds = pos["qty"] * price
+            sell_qty = min(float(order.get("qty") or pos["qty"]), pos["qty"])
+            proceeds = sell_qty * price
             self.book["cash"] += proceeds
-            self.book["realized_pnl"] += proceeds - pos["qty"] * pos["avg_price"]
+            self.book["realized_pnl"] += proceeds - sell_qty * pos["avg_price"]
+            pos["qty"] -= sell_qty
+            pos["last_price"] = price
+            if pos["qty"] * price < 0.01:
+                positions.pop(symbol)
         return {"status": "filled", "symbol": symbol, "price": price}
 
     def view(self):
@@ -87,6 +93,23 @@ class MockBroker:
                 for s, p in sorted(self.book["positions"].items())
             ],
         }
+
+
+class MirrorBroker(MockBroker):
+    """A mock book that replicates an external portfolio (contract section J).
+    The loop calls sync() each cycle; everything else — marks, P&L, kill
+    switch, analysts, chat — treats it like any book."""
+    name = "mirror"
+
+    def sync(self, cycle):
+        from . import mirror
+        return mirror.sync(self, cycle)
+
+    def view(self):
+        v = super().view()
+        spec = config.ACCOUNT.get("mirror", {})
+        v["account"] = f"mirror · {spec.get('source', '?')}"
+        return v
 
 
 class AlpacaBroker:
@@ -206,4 +229,6 @@ def get(state):
         return AlpacaBroker(state)
     if config.ACCOUNT_TYPE == "wallet":
         return WalletBroker(state)
+    if config.ACCOUNT_TYPE == "mirror":
+        return MirrorBroker(state)
     return MockBroker(state)

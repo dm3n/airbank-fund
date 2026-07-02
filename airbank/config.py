@@ -65,9 +65,14 @@ EQUITY_UNIVERSE = ["SPY", "QQQ", "NVDA", "AAPL", "MSFT", "META", "GOOGL"]
 
 # Hard caps — contract.md table. CRITICAL: evaluator halts on breach.
 # Mock accounts scale with chosen bankroll (assertion 31): 2% / 10%.
+# Mirror accounts replicate whole portfolios: caps = the bankroll itself
+# (long-only and unlevered by construction — cash is the constraint).
 if ACCOUNT_TYPE == "mock":
     _pos_cap = max(100.0, STARTING_CASH * 0.02)
     _gross_cap = max(500.0, STARTING_CASH * 0.10)
+elif ACCOUNT_TYPE == "mirror":
+    _pos_cap = STARTING_CASH
+    _gross_cap = STARTING_CASH
 else:
     _pos_cap = 200.0 if LIVE else 2000.0
     _gross_cap = 1000.0 if LIVE else 10000.0

@@ -139,6 +139,23 @@ Daniel's explicit per-trade approval. Paper mode may auto-execute.
 41. Onboarding: the cash prompt carries a `$` at the input point, and theme
     selection live-previews the highlighted theme before it is chosen.
 
+### J. Mirror accounts & views (v2.3)
+42. Account type `mirror` replicates an external portfolio — a public crypto
+    wallet, the connected Alpaca account, or any holdings in
+    ~/.airbank/mirror.json — into the fund's own book at real prices,
+    scaled to a user-chosen bankroll.
+43. Mirror rebalances are mechanical: they bypass the analyst gate but stay
+    long-only and unlevered (cash is the constraint), skip drifts under 1%
+    of equity, and log every trade to the tape. The signals engine never
+    trades on a mirrored book.
+44. The kill switch, marks, P&L, analysts, and chat treat a mirror book
+    exactly like any other.
+45. Three views: dashboard, hybrid (the desk chat replaces only the TAPE
+    panel, the grid stays), and full chat. A message sent from the
+    dashboard lands in hybrid; esc always steps back toward the dashboard.
+46. While the desk thinks, a breathing indicator (glyph + verb + elapsed
+    seconds) animates in the chat and the status line.
+
 ## Rubric calibration (rule 6)
 
 Good cycle: fresh data, few high-conviction proposals with specific falsifiable

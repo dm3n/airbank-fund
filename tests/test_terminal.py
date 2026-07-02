@@ -53,7 +53,7 @@ class InputTests(unittest.TestCase):
     def test_esc_flips_views_with_animation(self):
         term = Terminal()
         self.assertTrue(term.handle("\x1b"))
-        self.assertEqual(term.view, "chat")
+        self.assertEqual(term.view, "hybrid")
         self.assertTrue(term.switch_anim)
         term.switch_anim = False
         term.handle("\x1b")
