@@ -12,7 +12,7 @@ from . import config, ui
 from .state import LOG_FILE, load_state, log, save_state
 from .ui import accent, accent2, bad, bold, dim, good, money, warn
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 ui.set_theme(config.THEME)
 
@@ -326,6 +326,45 @@ def cmd_deploy(name=None, *_):
     print(dim("  read it: airbank research"))
 
 
+def cmd_schedule(name=None, when="08:45", *_):
+    """Deploy an analyst on a daily launchd schedule (Mac local time)."""
+    from . import analysts
+    if name not in analysts.ROSTER:
+        print(f"usage: airbank schedule <{'|'.join(analysts.ROSTER)}> [HH:MM|off]")
+        sys.exit(1)
+    plist_path = PLIST_PATH.parent / f"com.airbank.analyst.{name}.plist"
+    if when in ("off", "stop"):
+        subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+        if plist_path.exists():
+            plist_path.unlink()
+        print(f"{name} schedule removed")
+        return
+    try:
+        hour, minute = (int(x) for x in when.split(":"))
+        if not (0 <= hour < 24 and 0 <= minute < 60):
+            raise ValueError(when)
+    except ValueError:
+        print(bad(f"bad time {when!r} — use HH:MM, 24h"))
+        sys.exit(1)
+    binary = shutil.which("airbank") or sys.argv[0]
+    plist = {
+        "Label": f"com.airbank.analyst.{name}",
+        "ProgramArguments": [str(binary), "deploy", name],
+        "StartCalendarInterval": {"Hour": hour, "Minute": minute},
+        "StandardOutPath": str(config.HOME_DIR / f"analyst-{name}-stdout.log"),
+        "StandardErrorPath": str(config.HOME_DIR / f"analyst-{name}-stderr.log"),
+        "EnvironmentVariables": {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+    }
+    config.HOME_DIR.mkdir(parents=True, exist_ok=True)
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(plist_path, "wb") as f:
+        plistlib.dump(plist, f)
+    subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+    subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+    print(good(f"{analysts.ROSTER[name]['title']} files every day at {when} (Mac local time)"))
+    print(dim(f"  read it: airbank research   ·   stop it: airbank schedule {name} off"))
+
+
 def cmd_research(index="1", *_):
     from . import analysts
     files = analysts.reports()
@@ -371,6 +410,7 @@ def help_text():
   {bold('analyst desk')}
     airbank analysts          the roster: premarket, macro, crypto, equity, risk, journal
     airbank deploy <name>     deploy an analyst now — files a markdown report
+    airbank schedule <name> [HH:MM|off]  file a report every morning (default 08:45)
     airbank research [n|list] read the latest (or nth) research report
 
   {bold('operate')}
@@ -391,7 +431,7 @@ COMMANDS = {
     "resume": cmd_resume, "start": cmd_start, "stop": cmd_stop,
     "doctor": cmd_doctor, "contract": cmd_contract, "theme": cmd_theme,
     "dash": cmd_dash, "terminal": cmd_dash, "analysts": cmd_analysts,
-    "deploy": cmd_deploy, "research": cmd_research,
+    "deploy": cmd_deploy, "schedule": cmd_schedule, "research": cmd_research,
     "version": cmd_version, "--version": cmd_version,
     "approve": lambda *a: cmd_decide("approved", *a),
     "reject": lambda *a: cmd_decide("rejected", *a),

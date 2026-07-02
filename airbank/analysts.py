@@ -15,12 +15,10 @@ DEPLOY_TIMEOUT_S = 300
 
 ROSTER = {
     "premarket": {
-        "title": "Pre-Market Analyst",
-        "desc": "overnight moves, today's setup, what to watch at the open",
-        "brief": """Write the morning pre-market briefing. Cover: overnight crypto
-action, where the equity universe closed vs its trend, the fund's current
-exposure going into the session, and the 3 things most likely to move the
-book today. Close with a stance: aggressive / neutral / defensive, and why.""",
+        # routed to premarket.py — the full two-brain pipeline, not this PROMPT
+        "title": "Pre-Market Desk",
+        "desc": "two-brain morning watchlist: gap screen, strategy signals, news",
+        "brief": "(see premarket.py)",
     },
     "macro": {
         "title": "Macro Strategist",
@@ -111,9 +109,13 @@ def deploy(name, runner=None):
     """Run one analyst now. Returns (report_path, first_line). runner is
     injectable for tests; defaults to the claude CLI."""
     spec = ROSTER[name]
-    prompt = PROMPT.format(title=spec["title"], brief=spec["brief"], context=_context())
-    run = runner or _claude
-    report = run(prompt)
+    if name == "premarket":
+        from . import premarket
+        report = premarket.build(runner=runner)
+    else:
+        prompt = PROMPT.format(title=spec["title"], brief=spec["brief"],
+                               context=_context())
+        report = (runner or _claude)(prompt)
     if not report or not report.strip():
         raise RuntimeError(f"{name} produced no report")
     RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
@@ -128,6 +130,9 @@ def deploy(name, runner=None):
                   "report": str(path), "headline": headline[:80]}
     save_state(state)
     log("analyst", f"{name} filed: {headline[:60]}")
+    if name == "premarket":
+        from . import premarket
+        premarket.deliver(path, report, headline)
     return path, headline
 
 
