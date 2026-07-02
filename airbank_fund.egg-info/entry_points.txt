@@ -1,2 +1,0 @@
-[console_scripts]
-airbank = airbank.cli:main

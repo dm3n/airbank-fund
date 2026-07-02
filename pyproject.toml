@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "airbank-fund"
-version = "1.1.1"
+version = "1.1.2"
 description = "Airbank by Finsider — the AI-native hedge fund that lives in your terminal"
 readme = "README.md"
 requires-python = ">=3.9"

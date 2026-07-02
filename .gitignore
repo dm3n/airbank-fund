@@ -4,3 +4,6 @@ state/
 __pycache__/
 *.pyc
 .DS_Store
+build/
+*.egg-info/
+dist/
